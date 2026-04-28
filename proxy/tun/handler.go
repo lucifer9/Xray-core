@@ -32,6 +32,7 @@ type Handler struct {
 	dispatcher      routing.Dispatcher
 	tag             string
 	sniffingRequest session.SniffingRequest
+	routeMgr        RouteManager
 }
 
 // ConnectionHandler interface with the only method that stack is going to push new connections to
@@ -80,6 +81,12 @@ func (t *Handler) Start() error {
 		}
 		updater = &InterfaceUpdater{tunIndex: tunIndex, fixedName: t.config.AutoOutboundsInterface}
 		updater.Update()
+
+		// Start network monitor for auto-route
+		if t.config.AutoRoute {
+			updater.StartMonitor()
+		}
+
 		internet.RegisterDialerController(func(network, address string, c syscall.RawConn) error {
 			iface := updater.Get()
 			if iface == nil {
@@ -98,6 +105,50 @@ func (t *Handler) Start() error {
 				}
 			})
 		})
+
+		// Auto-route: build and apply OS-level routes
+		if t.config.AutoRoute {
+			tunName, _ := tunInterface.Name()
+
+			// Build routes covering all public IPs minus reserved ranges
+			universes := []netip.Prefix{
+				netip.MustParsePrefix("0.0.0.0/0"),
+				netip.MustParsePrefix("::/0"),
+			}
+			excludes := append(defaultIPv4Excludes, defaultIPv6Excludes...)
+			routes, err := BuildAutoRoutes(universes, excludes)
+			if err != nil {
+				_ = tunInterface.Close()
+				return err
+			}
+
+			// Determine gateways from config
+			var gateway4, gateway6 netip.Addr
+			for _, gw := range t.config.Gateway {
+				addr, err := netip.ParseAddr(gw)
+				if err != nil {
+					continue
+				}
+				if addr.Is4() && !gateway4.IsValid() {
+					gateway4 = addr
+				} else if addr.Is6() && !gateway6.IsValid() {
+					gateway6 = addr
+				}
+			}
+
+			// Create and apply route manager
+			routeMgr, err := NewRouteManager(tunName, tunIndex)
+			if err != nil {
+				_ = tunInterface.Close()
+				return err
+			}
+			if err := routeMgr.Apply(routes, gateway4, gateway6); err != nil {
+				_ = routeMgr.Close()
+				_ = tunInterface.Close()
+				return err
+			}
+			t.routeMgr = routeMgr
+		}
 	}
 
 	errors.LogInfo(t.ctx, tunName, " created")
@@ -179,7 +230,11 @@ func (t *Handler) HandleConnection(conn net.Conn, destination net.Destination) {
 
 // Close implements common.Closable.
 func (t *Handler) Close() error {
-	return errors.Combine(common.CloseIfExists(t.stack), common.CloseIfExists(t.tun))
+	routeErr := common.CloseIfExists(t.routeMgr)
+	if updater != nil {
+		updater.StopMonitor()
+	}
+	return errors.Combine(routeErr, common.CloseIfExists(t.stack), common.CloseIfExists(t.tun))
 }
 
 // Network implements proxy.Inbound

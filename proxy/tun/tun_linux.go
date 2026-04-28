@@ -5,6 +5,7 @@ package tun
 import (
 	"net"
 
+	"github.com/xtls/xray-core/common/errors"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/pkg/tcpip/link/fdbased"
@@ -33,6 +34,13 @@ func NewTun(options *Config) (Tun, error) {
 	tunLink, err := setup(options.Name, int(options.MTU))
 	if err != nil {
 		_ = unix.Close(tunFd)
+		return nil, err
+	}
+
+	// Configure IP addresses on the tun interface
+	if err := configureIPs(tunLink, options); err != nil {
+		_ = unix.Close(tunFd)
+		_ = netlink.LinkSetDown(tunLink)
 		return nil, err
 	}
 
@@ -89,6 +97,33 @@ func setup(name string, MTU int) (netlink.Link, error) {
 	}
 
 	return tunLink, nil
+}
+
+// configureIPs adds IP addresses to the tun interface.
+// If gateway addresses are specified in config, they are added directly.
+// If gateway is empty and autoRoute is enabled, a default gateway is generated.
+func configureIPs(tunLink netlink.Link, options *Config) error {
+	if len(options.Gateway) > 0 {
+		for _, gw := range options.Gateway {
+			addr, err := netlink.ParseAddr(gw)
+			if err != nil {
+				return errors.New("failed to parse gateway address").Base(err)
+			}
+			if err := netlink.AddrAdd(tunLink, addr); err != nil {
+				return errors.New("failed to add gateway address").Base(err)
+			}
+		}
+	} else if options.AutoRoute {
+		// Generate default gateway for auto_route mode
+		addr, err := netlink.ParseAddr("198.18.0.1/16")
+		if err != nil {
+			return errors.New("failed to parse default gateway").Base(err)
+		}
+		if err := netlink.AddrAdd(tunLink, addr); err != nil {
+			return errors.New("failed to add default gateway").Base(err)
+		}
+	}
+	return nil
 }
 
 // Start is called by handler to bring tun interface to life
