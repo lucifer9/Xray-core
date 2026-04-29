@@ -9,8 +9,8 @@ import (
 
 // RouteManager manages OS-level routes for auto_route mode.
 type RouteManager interface {
-	// Apply installs the given CIDR routes through the tun gateway.
-	Apply(routes []netip.Prefix, gateway4, gateway6 netip.Addr) error
+	// Apply installs the given CIDR routes and policy routing rules.
+	Apply(routes []netip.Prefix, prefix4, prefix6 netip.Prefix) error
 	// Close removes all routes and rules added by Apply.
 	Close() error
 }

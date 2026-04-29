@@ -4,15 +4,15 @@ package tun
 
 import (
 	"context"
+	stderrors "errors"
 	"net"
 	"net/netip"
 	"strconv"
 	"sync"
 
 	"github.com/xtls/xray-core/common/errors"
-	"github.com/vishvananda/netlink"
-	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/platform"
+	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/pkg/tcpip/link/fdbased"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -60,18 +60,25 @@ func NewTun(options *Config) (Tun, error) {
 		return nil, err
 	}
 
-	// Configure IP addresses on the tun interface
-	if err := configureIPs(tunLink, options); err != nil {
-		_ = unix.Close(tunFd)
-		_ = netlink.LinkSetDown(tunLink)
-		return nil, err
-	}
-
 	linuxTun := &LinuxTun{
 		tunFd:   tunFd,
 		tunLink: tunLink,
 		options: options,
 		ownsTun: true,
+	}
+
+	// Bring interface up before adding IPs so connected routes are
+	// immediately active (not linkdown). This is required for the
+	// kernel to validate gateway reachability when routes are added later.
+	if err := linuxTun.Start(); err != nil {
+		_ = unix.Close(tunFd)
+		return nil, err
+	}
+
+	if err := configureIPs(tunLink, options); err != nil {
+		_ = unix.Close(tunFd)
+		_ = netlink.LinkSetDown(tunLink)
+		return nil, err
 	}
 
 	return linuxTun, nil
@@ -173,6 +180,33 @@ func setup(name string, MTU int) (netlink.Link, error) {
 // configureIPs adds IP addresses to the tun interface.
 // Gateway addresses must be in CIDR format (e.g. "172.18.0.1/30").
 func configureIPs(tunLink netlink.Link, options *Config) error {
+	hasIPv6 := false
+	for _, gw := range options.Gateway {
+		addr, err := netlink.ParseAddr(gw)
+		if err != nil {
+			return errors.New("failed to parse gateway address").Base(err)
+		}
+		if addr.IP.To4() == nil {
+			hasIPv6 = true
+		}
+	}
+
+	// Tun interfaces have no MAC address, so the kernel's EUI-64
+	// link-local address generation may fail. IPv6 routing requires
+	// a link-local address on the interface. Add one explicitly.
+	if hasIPv6 {
+		llAddr, err := netlink.ParseAddr("fe80::1/64")
+		if err != nil {
+			return errors.New("failed to parse link-local address").Base(err)
+		}
+		if err := netlink.AddrAdd(tunLink, llAddr); err != nil {
+			// Ignore EEXIST (address already added by kernel)
+			if !stderrors.Is(err, unix.EEXIST) {
+				return errors.New("failed to add link-local address").Base(err)
+			}
+		}
+	}
+
 	for _, gw := range options.Gateway {
 		addr, err := netlink.ParseAddr(gw)
 		if err != nil {
