@@ -3,6 +3,7 @@
 package tun
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"net"
 	"net/netip"
@@ -30,7 +31,8 @@ func NewRouteManager(tunName string, tunIndex int) (RouteManager, error) {
 	}, nil
 }
 
-func (m *linuxRouteManager) Apply(routes []netip.Prefix, gateway4, gateway6 netip.Addr) error {
+func (m *linuxRouteManager) Apply(routes []netip.Prefix, prefix4, prefix6 netip.Prefix) error {
+	// Add routes (LinkIndex only, no Gw)
 	for _, r := range routes {
 		rt := &netlink.Route{
 			LinkIndex: m.tunIndex,
@@ -38,82 +40,133 @@ func (m *linuxRouteManager) Apply(routes []netip.Prefix, gateway4, gateway6 neti
 			Table:     m.table,
 		}
 		if r.Addr().Is4() {
-			if !gateway4.IsValid() {
+			if !prefix4.IsValid() {
 				continue
 			}
-			b4 := gateway4.As4()
-			rt.Gw = net.IP(b4[:])
 			rt.Family = unix.AF_INET
 		} else {
-			if !gateway6.IsValid() {
+			if !prefix6.IsValid() {
 				continue
 			}
-			b6 := gateway6.As16()
-			rt.Gw = net.IP(b6[:])
 			rt.Family = unix.AF_INET6
 		}
 		if err := netlink.RouteAdd(rt); err != nil {
-			// Handle EEXIST: delete and re-add
 			_ = netlink.RouteDel(rt)
 			if err := netlink.RouteAdd(rt); err != nil {
-				return xrayerrors.New("failed to add route").Base(err)
+				return xrayerrors.New("failed to add route: dst=" + r.String() + " table=" + fmt.Sprint(m.table) + " link=" + fmt.Sprint(m.tunIndex)).Base(err)
 			}
 		}
 		m.routes = append(m.routes, rt)
 	}
 
-	// Rule 1: iif=tun → NOP (prevent routing loops)
-	rule1 := netlink.NewRule()
-	rule1.IifName = m.tunName
-	rule1.Type = nl.FR_ACT_NOP
-	rule1.Priority = 100
-	if err := netlink.RuleAdd(rule1); err != nil {
-		return xrayerrors.New("failed to add loopback rule").Base(err)
-	}
-	m.rules = append(m.rules, rule1)
+	// NOTE: vishvananda/netlink checks `rule.Goto >= 0` and overrides
+	// msg.Type with FR_ACT_GOTO. Go zero-value for int is 0, which
+	// triggers this. All rules MUST set Goto: -1 to prevent the
+	// library from hijacking the action field.
 
-	// Rule 2: iif=lo + src=tun_IP → custom table (locally generated traffic)
-	if gateway4.IsValid() {
-		rule2 := netlink.NewRule()
-		rule2.IifName = "lo"
-		b4 := gateway4.As4()
-		rule2.Src = &net.IPNet{
-			IP:   net.IP(b4[:]),
-			Mask: net.CIDRMask(32, 32),
+	// IPv4 policy routing rules
+	if prefix4.IsValid() {
+		// iif=tun → NOP (prevent routing loops)
+		rule := &netlink.Rule{
+			Priority: 100, IifName: m.tunName,
+			Family: unix.AF_INET, Type: nl.FR_ACT_NOP, Goto: -1,
 		}
-		rule2.Table = m.table
-		rule2.Priority = 150
-		if err := netlink.RuleAdd(rule2); err != nil {
-			return xrayerrors.New("failed to add lo IPv4 rule").Base(err)
+		if err := netlink.RuleAdd(rule); err != nil {
+			return xrayerrors.New("failed to add IPv4 loop prevention rule").Base(err)
 		}
-		m.rules = append(m.rules, rule2)
-	}
-	if gateway6.IsValid() {
-		rule3 := netlink.NewRule()
-		rule3.IifName = "lo"
-		b6 := gateway6.As16()
-		rule3.Src = &net.IPNet{
-			IP:   net.IP(b6[:]),
-			Mask: net.CIDRMask(128, 128),
+		m.rules = append(m.rules, rule)
+
+		// not iif=lo → custom table (forwarded / non-local traffic)
+		rule = &netlink.Rule{
+			Priority: 110, Invert: true, IifName: "lo",
+			Table: m.table, Family: unix.AF_INET, Goto: -1,
 		}
-		rule3.Table = m.table
-		rule3.Priority = 151
-		if err := netlink.RuleAdd(rule3); err != nil {
-			return xrayerrors.New("failed to add lo IPv6 rule").Base(err)
+		if err := netlink.RuleAdd(rule); err != nil {
+			return xrayerrors.New("failed to add IPv4 forwarded traffic rule").Base(err)
 		}
-		m.rules = append(m.rules, rule3)
+		m.rules = append(m.rules, rule)
+
+		// iif=lo src=0.0.0.0/32 → custom table (unspecified source)
+		rule = &netlink.Rule{
+			Priority: 110, IifName: "lo",
+			Src:   &net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(32, 32)},
+			Table: m.table, Family: unix.AF_INET, Goto: -1,
+		}
+		if err := netlink.RuleAdd(rule); err != nil {
+			return xrayerrors.New("failed to add IPv4 unspecified source rule").Base(err)
+		}
+		m.rules = append(m.rules, rule)
+
+		// iif=lo src=tun_subnet → custom table
+		rule = &netlink.Rule{
+			Priority: 110, IifName: "lo",
+			Src: prefixToIPNet(prefix4.Masked()),
+			Table: m.table, Family: unix.AF_INET, Goto: -1,
+		}
+		if err := netlink.RuleAdd(rule); err != nil {
+			return xrayerrors.New("failed to add IPv4 tun subnet rule").Base(err)
+		}
+		m.rules = append(m.rules, rule)
 	}
 
-	// Rule 3: NOT iif=lo → custom table (all non-loopback outbound traffic)
-	rule4 := netlink.NewRule()
-	rule4.Invert = true
-	rule4.IifName = "lo"
-	rule4.Table = m.table
-	rule4.Priority = 200
-	if err := netlink.RuleAdd(rule4); err != nil {
-		return xrayerrors.New("failed to add non-lo rule").Base(err)
+	// IPv6 policy routing rules
+	if prefix6.IsValid() {
+		// iif=tun → NOP (prevent routing loops)
+		rule := &netlink.Rule{
+			Priority: 100, IifName: m.tunName,
+			Family: unix.AF_INET6, Type: nl.FR_ACT_NOP, Goto: -1,
+		}
+		if err := netlink.RuleAdd(rule); err != nil {
+			return xrayerrors.New("failed to add IPv6 loop prevention rule").Base(err)
+		}
+		m.rules = append(m.rules, rule)
+
+		// iif=lo src=::/1 → NOP (skip 0000:: - 7fff:ffff...)
+		rule = &netlink.Rule{
+			Priority: 100, IifName: "lo",
+			Src:    &net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(1, 128)},
+			Family: unix.AF_INET6, Type: nl.FR_ACT_NOP, Goto: -1,
+		}
+		if err := netlink.RuleAdd(rule); err != nil {
+			return xrayerrors.New("failed to add IPv6 ::/1 rule").Base(err)
+		}
+		m.rules = append(m.rules, rule)
+
+		// iif=lo src=8000::/1 → NOP (skip 8000:: - ffff:ffff...)
+		rule = &netlink.Rule{
+			Priority: 100, IifName: "lo",
+			Src: &net.IPNet{
+				IP:   net.IP{0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+				Mask: net.CIDRMask(1, 128),
+			},
+			Family: unix.AF_INET6, Type: nl.FR_ACT_NOP, Goto: -1,
+		}
+		if err := netlink.RuleAdd(rule); err != nil {
+			return xrayerrors.New("failed to add IPv6 8000::/1 rule").Base(err)
+		}
+		m.rules = append(m.rules, rule)
+
+		// iif=lo src=tun_subnet → custom table
+		rule = &netlink.Rule{
+			Priority: 111, IifName: "lo",
+			Src: prefixToIPNet(prefix6.Masked()),
+			Table: m.table, Family: unix.AF_INET6, Goto: -1,
+		}
+		if err := netlink.RuleAdd(rule); err != nil {
+			return xrayerrors.New("failed to add IPv6 tun subnet rule").Base(err)
+		}
+		m.rules = append(m.rules, rule)
+
+		// catch-all → custom table (all remaining IPv6 traffic)
+		rule = &netlink.Rule{
+			Priority: 112,
+			Table:    m.table, Family: unix.AF_INET6, Goto: -1,
+		}
+		if err := netlink.RuleAdd(rule); err != nil {
+			return xrayerrors.New("failed to add IPv6 catch-all rule").Base(err)
+		}
+		m.rules = append(m.rules, rule)
 	}
-	m.rules = append(m.rules, rule4)
 
 	return nil
 }

@@ -64,6 +64,12 @@ func (t *Handler) Init(ctx context.Context, pm policy.Manager, dispatcher routin
 		return err
 	}
 
+	// Bring interface up early so routes can be added later
+	if err := tunInterface.Start(); err != nil {
+		_ = tunInterface.Close()
+		return err
+	}
+
 	if t.config.AutoOutboundsInterface != "" {
 		tunIndex, err := tunInterface.Index()
 		if err != nil {
@@ -111,18 +117,17 @@ func (t *Handler) Init(ctx context.Context, pm policy.Manager, dispatcher routin
 				return err
 			}
 
-			// Determine gateways from config (CIDR format, e.g. "172.18.0.1/30")
-			var gateway4, gateway6 netip.Addr
+			// Determine tun prefixes from config (CIDR format, e.g. "172.18.0.1/30")
+			var prefix4, prefix6 netip.Prefix
 			for _, gw := range t.config.Gateway {
 				prefix, err := netip.ParsePrefix(gw)
 				if err != nil {
 					continue
 				}
-				addr := prefix.Addr()
-				if addr.Is4() && !gateway4.IsValid() {
-					gateway4 = addr
-				} else if addr.Is6() && !gateway6.IsValid() {
-					gateway6 = addr
+				if prefix.Addr().Is4() && !prefix4.IsValid() {
+					prefix4 = prefix
+				} else if prefix.Addr().Is6() && !prefix6.IsValid() {
+					prefix6 = prefix
 				}
 			}
 
@@ -132,7 +137,7 @@ func (t *Handler) Init(ctx context.Context, pm policy.Manager, dispatcher routin
 				_ = tunInterface.Close()
 				return err
 			}
-			if err := routeMgr.Apply(routes, gateway4, gateway6); err != nil {
+			if err := routeMgr.Apply(routes, prefix4, prefix6); err != nil {
 				_ = routeMgr.Close()
 				_ = tunInterface.Close()
 				return err
@@ -154,13 +159,6 @@ func (t *Handler) Init(ctx context.Context, pm policy.Manager, dispatcher routin
 	}
 
 	err = tunStack.Start()
-	if err != nil {
-		_ = tunStack.Close()
-		_ = tunInterface.Close()
-		return err
-	}
-
-	err = tunInterface.Start()
 	if err != nil {
 		_ = tunStack.Close()
 		_ = tunInterface.Close()
