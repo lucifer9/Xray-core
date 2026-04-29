@@ -25,7 +25,7 @@ func NewRouteManager(tunName string, tunIndex int) (RouteManager, error) {
 	return &darwinRouteManager{fd: fd}, nil
 }
 
-func (m *darwinRouteManager) Apply(routes []netip.Prefix, gateway4, gateway6 netip.Addr) error {
+func (m *darwinRouteManager) Apply(routes []netip.Prefix, prefix4, prefix6 netip.Prefix) error {
 	for _, r := range routes {
 		rm := &route.RouteMessage{
 			Version: syscall.RTM_VERSION,
@@ -34,21 +34,21 @@ func (m *darwinRouteManager) Apply(routes []netip.Prefix, gateway4, gateway6 net
 		}
 
 		if r.Addr().Is4() {
-			if !gateway4.IsValid() {
+			if !prefix4.IsValid() {
 				continue
 			}
 			rm.Addrs = []route.Addr{
 				&route.Inet4Addr{IP: r.Addr().As4()},
-				&route.Inet4Addr{IP: gateway4.As4()},
+				&route.Inet4Addr{IP: prefix4.Addr().As4()},
 				&route.Inet4Addr{IP: netmask4(r.Bits())},
 			}
 		} else {
-			if !gateway6.IsValid() {
+			if !prefix6.IsValid() {
 				continue
 			}
 			rm.Addrs = []route.Addr{
 				&route.Inet6Addr{IP: r.Addr().As16()},
-				&route.Inet6Addr{IP: gateway6.As16()},
+				&route.Inet6Addr{IP: prefix6.Addr().As16()},
 				&route.Inet6Addr{IP: netmask6(r.Bits())},
 			}
 		}
