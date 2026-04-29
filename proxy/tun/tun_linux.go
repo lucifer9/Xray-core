@@ -171,27 +171,15 @@ func setup(name string, MTU int) (netlink.Link, error) {
 }
 
 // configureIPs adds IP addresses to the tun interface.
-// If gateway addresses are specified in config, they are added directly.
-// If gateway is empty and autoRoute is enabled, a default gateway is generated.
+// Gateway addresses must be in CIDR format (e.g. "172.18.0.1/30").
 func configureIPs(tunLink netlink.Link, options *Config) error {
-	if len(options.Gateway) > 0 {
-		for _, gw := range options.Gateway {
-			addr, err := netlink.ParseAddr(gw)
-			if err != nil {
-				return errors.New("failed to parse gateway address").Base(err)
-			}
-			if err := netlink.AddrAdd(tunLink, addr); err != nil {
-				return errors.New("failed to add gateway address").Base(err)
-			}
-		}
-	} else if options.AutoRoute {
-		// Generate default gateway for auto_route mode
-		addr, err := netlink.ParseAddr("198.18.0.1/16")
+	for _, gw := range options.Gateway {
+		addr, err := netlink.ParseAddr(gw)
 		if err != nil {
-			return errors.New("failed to parse default gateway").Base(err)
+			return errors.New("failed to parse gateway address").Base(err)
 		}
 		if err := netlink.AddrAdd(tunLink, addr); err != nil {
-			return errors.New("failed to add default gateway").Base(err)
+			return errors.New("failed to add gateway address").Base(err)
 		}
 	}
 	return nil

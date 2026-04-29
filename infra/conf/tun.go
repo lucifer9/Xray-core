@@ -40,5 +40,8 @@ func (v *TunConfig) Build() (proto.Message, error) {
 	if config.MTU == 0 {
 		config.MTU = 1500
 	}
+	if config.AutoRoute && len(config.Gateway) == 0 {
+		config.Gateway = []string{"198.18.0.1/16"}
+	}
 	return config, nil
 }

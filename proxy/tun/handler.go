@@ -142,13 +142,14 @@ func (t *Handler) Start() error {
 				return err
 			}
 
-			// Determine gateways from config
+			// Determine gateways from config (CIDR format, e.g. "172.18.0.1/30")
 			var gateway4, gateway6 netip.Addr
 			for _, gw := range t.config.Gateway {
-				addr, err := netip.ParseAddr(gw)
+				prefix, err := netip.ParsePrefix(gw)
 				if err != nil {
 					continue
 				}
+				addr := prefix.Addr()
 				if addr.Is4() && !gateway4.IsValid() {
 					gateway4 = addr
 				} else if addr.Is6() && !gateway6.IsValid() {
