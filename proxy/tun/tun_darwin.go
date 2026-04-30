@@ -24,11 +24,11 @@ import (
 )
 
 const (
-	utunControlName = "com.apple.net.utun_control"
-	sysprotoControl = 2
-	gateway         = "169.254.10.1/30"
-	utunHeaderSize  = 4
-	UTUN_OPT_IFNAME = 2
+	utunControlName    = "com.apple.net.utun_control"
+	sysprotoControl    = 2
+	utunHeaderSize     = 4
+	UTUN_OPT_IFNAME    = 2
+	fallbackIPv4Prefix = "169.254.10.1/30"
 )
 
 const (
@@ -93,7 +93,7 @@ func NewTun(options *Config) (Tun, error) {
 		return nil, err
 	}
 
-	err = setup(name, options.MTU)
+	err = setup(name, options.MTU, options.Gateway)
 	if err != nil {
 		_ = tunFile.Close()
 		return nil, err
@@ -326,20 +326,42 @@ func open(name string) (*os.File, error) {
 	return os.NewFile(uintptr(fd), name), nil
 }
 
-// setup the interface by name
-func setup(name string, MTU uint32) error {
+// setup configures the tun interface with MTU and IP addresses from gateway config.
+// Addresses are in CIDR format (e.g. "172.18.0.1/30", "fd00::1/126").
+// On macOS, the tun interface is point-to-point: local and remote addresses
+// are set to the gateway address itself (Addr == Dstaddr), matching sing-tun convention.
+func setup(name string, MTU uint32, gateways []string) error {
 	if err := setMTU(name, MTU); err != nil {
 		return err
 	}
 
-	/*
-	 * Darwin routing require tunnel type interface to have local and remote address, to be routable.
-	 * To simplify inevitable task, assign the interface static ip address, which in current implementation
-	 * is just some random ip from link-local pool, allowing to not bother about existing routing intersection.
-	 */
-	syntheticIP, _ := netip.ParsePrefix(gateway)
-	if err := setIPAddress(name, syntheticIP); err != nil {
-		return err
+	var prefix4, prefix6 netip.Prefix
+	for _, gw := range gateways {
+		prefix, err := netip.ParsePrefix(gw)
+		if err != nil {
+			continue
+		}
+		if prefix.Addr().Is4() && !prefix4.IsValid() {
+			prefix4 = prefix
+		} else if prefix.Addr().Is6() && !prefix6.IsValid() {
+			prefix6 = prefix
+		}
+	}
+
+	// Fallback: no gateway configured, use link-local address
+	if !prefix4.IsValid() && !prefix6.IsValid() {
+		prefix4, _ = netip.ParsePrefix(fallbackIPv4Prefix)
+	}
+
+	if prefix4.IsValid() {
+		if err := setIPv4Address(name, prefix4); err != nil {
+			return err
+		}
+	}
+	if prefix6.IsValid() {
+		if err := setIPv6Address(name, prefix6); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -381,79 +403,83 @@ type addrLifetime6 struct {
 	Pltime    uint32
 }
 
-// setIPAddress sets ipv4 and ipv6 addresses to the interface, required for the routing to work
-func setIPAddress(name string, gateway netip.Prefix) error {
-	socket4, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
+// setIPv4Address assigns an IPv4 address to the tun interface.
+// On macOS tun is point-to-point: Addr and Dstaddr are both set to the
+// gateway address, following sing-tun convention.
+func setIPv4Address(name string, prefix netip.Prefix) error {
+	socket, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
 	if err != nil {
 		return err
 	}
-	defer unix.Close(socket4)
+	defer unix.Close(socket)
 
-	// assume local ip address is next one from the remote address
-	local4 := gateway.Addr().As4()
-	local4[3]++
+	addr := prefix.Addr().As4()
+	mask := netip.MustParseAddr(net.IP(net.CIDRMask(prefix.Bits(), 32)).String()).As4()
 
-	// fill the configuration for ipv4
-	ifReq4 := ifAliasReq4{
+	ifReq := ifAliasReq4{
 		Addr: unix.RawSockaddrInet4{
 			Len:    unix.SizeofSockaddrInet4,
 			Family: unix.AF_INET,
-			Addr:   local4,
+			Addr:   addr,
 		},
 		Dstaddr: unix.RawSockaddrInet4{
 			Len:    unix.SizeofSockaddrInet4,
 			Family: unix.AF_INET,
-			Addr:   gateway.Addr().As4(),
+			Addr:   addr,
 		},
 		Mask: unix.RawSockaddrInet4{
 			Len:    unix.SizeofSockaddrInet4,
 			Family: unix.AF_INET,
-			Addr:   netip.MustParseAddr(net.IP(net.CIDRMask(gateway.Bits(), 32)).String()).As4(),
+			Addr:   mask,
 		},
 	}
-	copy(ifReq4.Name[:], name)
-	if err = ioctlPtr(socket4, unix.SIOCAIFADDR, unsafe.Pointer(&ifReq4)); err != nil {
+	copy(ifReq.Name[:], name)
+	if err = ioctlPtr(socket, unix.SIOCAIFADDR, unsafe.Pointer(&ifReq)); err != nil {
 		return os.NewSyscallError("SIOCAIFADDR", err)
 	}
+	return nil
+}
 
-	socket6, err := unix.Socket(unix.AF_INET6, unix.SOCK_DGRAM, 0)
+// setIPv6Address assigns an IPv6 address to the tun interface.
+// For /128 prefixes, Dstaddr is set to Addr.Next() for point-to-point peer.
+func setIPv6Address(name string, prefix netip.Prefix) error {
+	socket, err := unix.Socket(unix.AF_INET6, unix.SOCK_DGRAM, 0)
 	if err != nil {
 		return err
 	}
-	defer unix.Close(socket6)
+	defer unix.Close(socket)
 
-	// link-local ipv6 address with suffix from ipv6
-	local6 := netip.AddrFrom16([16]byte{0: 0xfe, 1: 0x80, 12: local4[0], 13: local4[1], 14: local4[2], 15: local4[3]})
+	addr := prefix.Addr().As16()
+	mask := netip.MustParseAddr(net.IP(net.CIDRMask(prefix.Bits(), 128)).String()).As16()
 
-	// fill the configuration for ipv6
-	// only link-local address without the destination is enough for it
 	ifReq6 := ifAliasReq6{
 		Addr: unix.RawSockaddrInet6{
 			Len:    unix.SizeofSockaddrInet6,
 			Family: unix.AF_INET6,
-			Addr:   local6.As16(),
+			Addr:   addr,
 		},
 		Mask: unix.RawSockaddrInet6{
 			Len:    unix.SizeofSockaddrInet6,
 			Family: unix.AF_INET6,
-			Addr:   netip.MustParseAddr(net.IP(net.CIDRMask(64, 128)).String()).As16(),
+			Addr:   mask,
 		},
-		Flags: IN6_IFF_NODAD,
+		Flags: IN6_IFF_NODAD | IN6_IFF_SECURED,
 		Lifetime: addrLifetime6{
 			Vltime: ND6_INFINITE_LIFETIME,
 			Pltime: ND6_INFINITE_LIFETIME,
 		},
 	}
-	// assign link-local ipv6 address to the interface.
-	// this will additionally trigger OS level autoconfiguration, which will result two different link-local
-	// addresses - the requested one, and autoconfigured one.
-	// this really has no known side effects, just look excessive. and actually considered pretty normal way to
-	// enable the ipv6 on the interface by macOS concepts.
+	if prefix.Bits() == 128 {
+		ifReq6.Dstaddr = unix.RawSockaddrInet6{
+			Len:    unix.SizeofSockaddrInet6,
+			Family: unix.AF_INET6,
+			Addr:   prefix.Addr().Next().As16(),
+		}
+	}
 	copy(ifReq6.Name[:], name)
-	if err = ioctlPtr(socket6, SIOCAIFADDR6, unsafe.Pointer(&ifReq6)); err != nil {
+	if err = ioctlPtr(socket, SIOCAIFADDR6, unsafe.Pointer(&ifReq6)); err != nil {
 		return os.NewSyscallError("SIOCAIFADDR6", err)
 	}
-
 	return nil
 }
 
