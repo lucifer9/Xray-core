@@ -34,9 +34,6 @@ func (v *TunConfig) Build() (proto.Message, error) {
 		config.AutoOutboundsInterface = "auto"
 	}
 
-	if config.Name == "" {
-		config.Name = "xray0"
-	}
 	if config.MTU == 0 {
 		config.MTU = 1500
 	}
