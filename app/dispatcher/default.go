@@ -91,13 +91,97 @@ func (r *cachedReader) Interrupt() {
 	}
 }
 
+const (
+	udpSniffProtocolTTL        = 3 * time.Second
+	udpSniffProtocolMaxEntries = 4096
+)
+
+type udpSniffProtocolKey struct {
+	inboundTag  string
+	source      string
+	destination string
+}
+
+type udpSniffProtocolEntry struct {
+	protocol  string
+	expiresAt time.Time
+}
+
+type udpSniffProtocolCache struct {
+	sync.Mutex
+	entries map[udpSniffProtocolKey]udpSniffProtocolEntry
+}
+
+func newUDPSniffProtocolKey(ctx context.Context, destination net.Destination) (udpSniffProtocolKey, bool) {
+	if destination.Network != net.Network_UDP {
+		return udpSniffProtocolKey{}, false
+	}
+	inbound := session.InboundFromContext(ctx)
+	if inbound == nil || !inbound.Source.IsValid() {
+		return udpSniffProtocolKey{}, false
+	}
+	return udpSniffProtocolKey{
+		inboundTag:  inbound.Tag,
+		source:      inbound.Source.String(),
+		destination: destination.String(),
+	}, true
+}
+
+func (c *udpSniffProtocolCache) remember(ctx context.Context, destination net.Destination, protocol string, now time.Time) {
+	if protocol != "quic" {
+		return
+	}
+	key, ok := newUDPSniffProtocolKey(ctx, destination)
+	if !ok {
+		return
+	}
+	c.Lock()
+	defer c.Unlock()
+	if c.entries == nil {
+		c.entries = make(map[udpSniffProtocolKey]udpSniffProtocolEntry)
+	}
+	if len(c.entries) >= udpSniffProtocolMaxEntries/2 {
+		for key, entry := range c.entries {
+			if !now.Before(entry.expiresAt) {
+				delete(c.entries, key)
+			}
+		}
+	}
+	if len(c.entries) >= udpSniffProtocolMaxEntries {
+		return
+	}
+	c.entries[key] = udpSniffProtocolEntry{
+		protocol:  protocol,
+		expiresAt: now.Add(udpSniffProtocolTTL),
+	}
+}
+
+func (c *udpSniffProtocolCache) lookup(ctx context.Context, destination net.Destination, now time.Time) string {
+	key, ok := newUDPSniffProtocolKey(ctx, destination)
+	if !ok {
+		return ""
+	}
+	c.Lock()
+	defer c.Unlock()
+	entry, ok := c.entries[key]
+	if !ok {
+		return ""
+	}
+	if !now.Before(entry.expiresAt) {
+		delete(c.entries, key)
+		return ""
+	}
+	return entry.protocol
+}
+
 // DefaultDispatcher is a default implementation of Dispatcher.
 type DefaultDispatcher struct {
-	ohm    outbound.Manager
-	router routing.Router
-	policy policy.Manager
-	stats  stats.Manager
-	fdns   dns.FakeDNSEngine
+	ohm               outbound.Manager
+	router            routing.Router
+	policy            policy.Manager
+	stats             stats.Manager
+	fdns              dns.FakeDNSEngine
+	udpSniffProtocols udpSniffProtocolCache
 }
 
 func init() {
@@ -295,6 +379,12 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 			result, err := sniffer(ctx, cReader, sniffingRequest.MetadataOnly, destination.Network)
 			if err == nil {
 				content.Protocol = result.Protocol()
+				d.udpSniffProtocols.remember(ctx, ob.OriginalTarget, content.Protocol, time.Now())
+			} else if content.Protocol == "" {
+				content.Protocol = d.udpSniffProtocols.lookup(ctx, ob.OriginalTarget, time.Now())
+				if content.Protocol != "" {
+					errors.LogDebug(ctx, "reused cached UDP sniff protocol: ", content.Protocol)
+				}
 			}
 			if err == nil && d.shouldOverride(ctx, result, sniffingRequest, destination) {
 				domain := result.Domain()
@@ -350,6 +440,12 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 		result, err := sniffer(ctx, cReader, sniffingRequest.MetadataOnly, destination.Network)
 		if err == nil {
 			content.Protocol = result.Protocol()
+			d.udpSniffProtocols.remember(ctx, ob.OriginalTarget, content.Protocol, time.Now())
+		} else if content.Protocol == "" {
+			content.Protocol = d.udpSniffProtocols.lookup(ctx, ob.OriginalTarget, time.Now())
+			if content.Protocol != "" {
+				errors.LogDebug(ctx, "reused cached UDP sniff protocol: ", content.Protocol)
+			}
 		}
 		if err == nil && d.shouldOverride(ctx, result, sniffingRequest, destination) {
 			domain := result.Domain()
