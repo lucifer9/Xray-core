@@ -72,12 +72,20 @@ func NewTun(options *Config) (Tun, error) {
 	}
 
 	// macOS: create our own utun interface
-	tunFile, err := open(options.Name)
+	var tunFile *os.File
+	var name string
+	var err error
+	if options.Name == "" {
+		tunFile, name, err = openAuto()
+	} else {
+		name = options.Name
+		tunFile, err = open(name)
+	}
 	if err != nil {
 		return nil, err
 	}
 
-	err = setup(options.Name, options.MTU)
+	err = setup(name, options.MTU)
 	if err != nil {
 		_ = tunFile.Close()
 		return nil, err
@@ -195,6 +203,44 @@ func (t *DarwinTun) Wait() {
 
 func (t *DarwinTun) newEndpoint() (stack.LinkEndpoint, error) {
 	return &LinkEndpoint{deviceMTU: t.options.MTU, device: t}, nil
+}
+
+// openAuto creates a utun interface with kernel-assigned unit number.
+// Passing Unit=0 to connect(2) tells the kernel to allocate the next available utun.
+func openAuto() (*os.File, string, error) {
+	fd, err := unix.Socket(unix.AF_SYSTEM, unix.SOCK_DGRAM, sysprotoControl)
+	if err != nil {
+		return nil, "", err
+	}
+
+	ctlInfo := &unix.CtlInfo{}
+	copy(ctlInfo.Name[:], utunControlName)
+	if err := unix.IoctlCtlInfo(fd, ctlInfo); err != nil {
+		_ = unix.Close(fd)
+		return nil, "", err
+	}
+
+	sockaddr := &unix.SockaddrCtl{
+		ID:   ctlInfo.Id,
+		Unit: 0, // let the kernel pick the next available utun
+	}
+	if err := unix.Connect(fd, sockaddr); err != nil {
+		_ = unix.Close(fd)
+		return nil, "", err
+	}
+
+	if err := unix.SetNonblock(fd, true); err != nil {
+		_ = unix.Close(fd)
+		return nil, "", err
+	}
+
+	name, err := unix.GetsockoptString(fd, sysprotoControl, UTUN_OPT_IFNAME)
+	if err != nil {
+		_ = unix.Close(fd)
+		return nil, "", err
+	}
+
+	return os.NewFile(uintptr(fd), name), name, nil
 }
 
 // open the interface, by creating new utunN if in the system and returning its file descriptor
