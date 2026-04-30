@@ -58,11 +58,12 @@ func (t *Handler) Init(ctx context.Context, pm policy.Manager, dispatcher routin
 	t.policyManager = pm
 	t.dispatcher = dispatcher
 
-	tunName := t.config.Name
 	tunInterface, err := NewTun(t.config)
 	if err != nil {
 		return err
 	}
+
+	tunName, _ := tunInterface.Name()
 
 	// Bring interface up early so routes can be added later
 	if err := tunInterface.Start(); err != nil {
@@ -103,8 +104,6 @@ func (t *Handler) Init(ctx context.Context, pm policy.Manager, dispatcher routin
 
 		// Auto-route: build and apply OS-level routes
 		if t.config.AutoRoute {
-			tunName, _ := tunInterface.Name()
-
 			// Build routes covering all public IPs minus reserved ranges
 			universes := []netip.Prefix{
 				netip.MustParsePrefix("0.0.0.0/0"),
