@@ -171,6 +171,8 @@ func (c *udpSniffProtocolCache) lookup(ctx context.Context, destination net.Dest
 		delete(c.entries, key)
 		return ""
 	}
+	entry.expiresAt = now.Add(udpSniffProtocolTTL)
+	c.entries[key] = entry
 	return entry.protocol
 }
 

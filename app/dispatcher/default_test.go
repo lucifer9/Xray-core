@@ -20,7 +20,8 @@ func TestUDPSniffProtocolCache(t *testing.T) {
 
 	cache.remember(ctx, destination, "quic", now)
 
-	if protocol := cache.lookup(ctx, destination, now.Add(time.Second)); protocol != "quic" {
+	lookupTime := now.Add(time.Second)
+	if protocol := cache.lookup(ctx, destination, lookupTime); protocol != "quic" {
 		t.Fatalf("lookup() = %q, want quic", protocol)
 	}
 
@@ -29,8 +30,35 @@ func TestUDPSniffProtocolCache(t *testing.T) {
 		t.Fatalf("lookup() for different destination = %q, want empty", protocol)
 	}
 
-	if protocol := cache.lookup(ctx, destination, now.Add(udpSniffProtocolTTL+time.Nanosecond)); protocol != "" {
+	if protocol := cache.lookup(ctx, destination, lookupTime.Add(udpSniffProtocolTTL+time.Nanosecond)); protocol != "" {
 		t.Fatalf("lookup() after expiry = %q, want empty", protocol)
+	}
+}
+
+func TestUDPSniffProtocolCacheRefreshesTTLOnLookup(t *testing.T) {
+	cache := &udpSniffProtocolCache{}
+	now := time.Now()
+	ctx := session.ContextWithInbound(context.Background(), &session.Inbound{
+		Tag:    "all-in",
+		Source: net.UDPDestination(net.ParseAddress("172.18.0.1"), 65130),
+	})
+	destination := net.UDPDestination(net.ParseAddress("3.165.39.9"), 443)
+
+	cache.remember(ctx, destination, "quic", now)
+
+	firstLookup := now.Add(udpSniffProtocolTTL - 100*time.Millisecond)
+	if protocol := cache.lookup(ctx, destination, firstLookup); protocol != "quic" {
+		t.Fatalf("lookup() = %q, want quic", protocol)
+	}
+
+	secondLookup := firstLookup.Add(udpSniffProtocolTTL - 100*time.Millisecond)
+	if protocol := cache.lookup(ctx, destination, secondLookup); protocol != "quic" {
+		t.Fatalf("lookup() after refreshed TTL = %q, want quic", protocol)
+	}
+
+	expiredLookup := secondLookup.Add(udpSniffProtocolTTL + time.Nanosecond)
+	if protocol := cache.lookup(ctx, destination, expiredLookup); protocol != "" {
+		t.Fatalf("lookup() after refreshed TTL expiry = %q, want empty", protocol)
 	}
 }
 
