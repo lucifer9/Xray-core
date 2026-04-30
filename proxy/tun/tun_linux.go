@@ -27,12 +27,17 @@ var _ Tun = (*LinuxTun)(nil)
 
 // NewTun builds new tun interface handler (linux specific)
 func NewTun(options *Config) (Tun, error) {
-	tunFd, err := open(options.Name)
+	name := options.Name
+	if name == "" {
+		name = "xray0"
+	}
+
+	tunFd, err := open(name)
 	if err != nil {
 		return nil, err
 	}
 
-	tunLink, err := setup(options.Name, int(options.MTU))
+	tunLink, err := setup(name, int(options.MTU))
 	if err != nil {
 		_ = unix.Close(tunFd)
 		return nil, err
