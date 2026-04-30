@@ -165,6 +165,14 @@ func (f *icmpForwarder) processReplyIPv4(originalSrc netip.Addr, data []byte) bo
 		return false
 	}
 	ipHdr := header.IPv4(data)
+
+	// Clamp IP TotalLength to actual received bytes to prevent
+	// Payload() from exceeding buffer bounds when the raw socket
+	// receive buffer is smaller than the packet's declared length.
+	if int(ipHdr.TotalLength()) > len(data) {
+		ipHdr.SetTotalLength(uint16(len(data)))
+	}
+
 	icmpHdr := header.ICMPv4(ipHdr.Payload())
 
 	// Only process Echo Reply (type 0)
@@ -200,6 +208,13 @@ func (f *icmpForwarder) processReplyIPv6(originalSrc netip.Addr, data []byte) bo
 		return false
 	}
 	ipHdr := header.IPv6(data)
+
+	// Clamp IPv6 PayloadLength to actual received bytes to prevent
+	// Payload() from exceeding buffer bounds.
+	if int(ipHdr.PayloadLength())+header.IPv6MinimumSize > len(data) {
+		ipHdr.SetPayloadLength(uint16(len(data) - header.IPv6MinimumSize))
+	}
+
 	icmpHdr := header.ICMPv6(ipHdr.Payload())
 
 	// Only process Echo Reply (type 129)
