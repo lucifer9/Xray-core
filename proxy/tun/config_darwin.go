@@ -41,7 +41,7 @@ func (updater *InterfaceUpdater) Update() {
 }
 
 func (updater *InterfaceUpdater) findDefaultRoute() bool {
-	data, err := route.FetchRIB(syscall.AF_ROUTE, route.RIBTypeRoute, 0)
+	data, err := route.FetchRIB(syscall.AF_UNSPEC, route.RIBTypeRoute, 0)
 	if err != nil {
 		return false
 	}
@@ -49,13 +49,28 @@ func (updater *InterfaceUpdater) findDefaultRoute() bool {
 	if err != nil {
 		return false
 	}
+	index := defaultRouteInterfaceIndex(msgs, updater.tunIndex)
+	if index == 0 {
+		return false
+	}
+	iface, err := net.InterfaceByIndex(index)
+	if err == nil {
+		updater.iface = iface
+		errors.LogInfo(context.Background(), "[tun] update interface (via RIB) ", iface.Name, " ", iface.Index)
+		return true
+	}
+	return false
+}
+
+func defaultRouteInterfaceIndex(msgs []route.Message, tunIndex int) int {
+	ipv6Index := 0
 	for _, msg := range msgs {
 		rm, ok := msg.(*route.RouteMessage)
 		if !ok {
 			continue
 		}
 		// Skip tun interface
-		if rm.Index == updater.tunIndex {
+		if rm.Index == tunIndex {
 			continue
 		}
 		// Check for default route: UP + GATEWAY flags
@@ -63,20 +78,17 @@ func (updater *InterfaceUpdater) findDefaultRoute() bool {
 			continue
 		}
 		// Check destination is default (0.0.0.0 or ::)
-		if len(rm.Addrs) > 0 && rm.Addrs[0] != nil {
-			if !isDefaultAddr(rm.Addrs[0]) {
-				continue
-			}
+		if len(rm.Addrs) == 0 || rm.Addrs[0] == nil || !isDefaultAddr(rm.Addrs[0]) {
+			continue
 		}
-		// Found default route
-		iface, err := net.InterfaceByIndex(rm.Index)
-		if err == nil {
-			updater.iface = iface
-			errors.LogInfo(context.Background(), "[tun] update interface (via RIB) ", iface.Name, " ", iface.Index)
-			return true
+		if _, ok := rm.Addrs[0].(*route.Inet4Addr); ok {
+			return rm.Index
+		}
+		if ipv6Index == 0 {
+			ipv6Index = rm.Index
 		}
 	}
-	return false
+	return ipv6Index
 }
 
 func isDefaultAddr(addr route.Addr) bool {
