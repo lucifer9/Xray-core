@@ -22,6 +22,7 @@ func TestTunConfigAutoRoute(t *testing.T) {
 			Output: &tun.Config{
 				Name:                   "xray0",
 				MTU:                    1500,
+				Gateway:                []string{"198.18.0.1/16"},
 				AutoRoute:              true,
 				AutoOutboundsInterface: "auto",
 			},
@@ -33,8 +34,8 @@ func TestTunConfigAutoRoute(t *testing.T) {
 			}`,
 			Parser: loadJSON(creator),
 			Output: &tun.Config{
-				Name:  "xray0",
-				MTU:   1500,
+				Name:      "xray0",
+				MTU:       1500,
 				AutoRoute: false,
 			},
 		},
@@ -48,6 +49,7 @@ func TestTunConfigAutoRoute(t *testing.T) {
 			Output: &tun.Config{
 				Name:                   "xray0",
 				MTU:                    1500,
+				Gateway:                []string{"198.18.0.1/16"},
 				AutoRoute:              true,
 				AutoOutboundsInterface: "eth0",
 			},
@@ -75,6 +77,7 @@ func TestTunConfigAutoRoute(t *testing.T) {
 			Output: &tun.Config{
 				Name:                   "xray0",
 				MTU:                    1500,
+				Gateway:                []string{"198.18.0.1/16"},
 				AutoRoute:              true,
 				AutoSystemRoutingTable: []string{"100"},
 				AutoOutboundsInterface: "auto",
