@@ -13,6 +13,7 @@ type TunConfig struct {
 	UserLevel              uint32   `json:"userLevel"`
 	AutoSystemRoutingTable []string `json:"autoSystemRoutingTable"`
 	AutoOutboundsInterface *string  `json:"autoOutboundsInterface"`
+	AutoRoute              bool     `json:"autoRoute"`
 }
 
 func (v *TunConfig) Build() (proto.Message, error) {
@@ -23,19 +24,21 @@ func (v *TunConfig) Build() (proto.Message, error) {
 		DNS:                    v.DNS,
 		UserLevel:              v.UserLevel,
 		AutoSystemRoutingTable: v.AutoSystemRoutingTable,
+		AutoRoute:              v.AutoRoute,
 	}
 	if v.AutoOutboundsInterface != nil {
 		config.AutoOutboundsInterface = *v.AutoOutboundsInterface
-	}
-	if len(v.AutoSystemRoutingTable) > 0 && v.AutoOutboundsInterface == nil {
+	} else if v.AutoRoute {
+		config.AutoOutboundsInterface = "auto"
+	} else if len(v.AutoSystemRoutingTable) > 0 {
 		config.AutoOutboundsInterface = "auto"
 	}
 
-	if config.Name == "" {
-		config.Name = "xray0"
-	}
 	if config.MTU == 0 {
 		config.MTU = 1500
+	}
+	if config.AutoRoute && len(config.Gateway) == 0 {
+		config.Gateway = []string{"198.18.0.1/16"}
 	}
 	return config, nil
 }

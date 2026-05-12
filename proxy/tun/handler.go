@@ -2,6 +2,7 @@ package tun
 
 import (
 	"context"
+	"net/netip"
 	"syscall"
 
 	"github.com/xtls/xray-core/common"
@@ -30,6 +31,7 @@ type Handler struct {
 	dispatcher      routing.Dispatcher
 	tag             string
 	sniffingRequest session.SniffingRequest
+	routeMgr        RouteManager
 }
 
 // ConnectionHandler interface with the only method that stack is going to push new connections to
@@ -56,9 +58,16 @@ func (t *Handler) Init(ctx context.Context, pm policy.Manager, dispatcher routin
 	t.policyManager = pm
 	t.dispatcher = dispatcher
 
-	tunName := t.config.Name
 	tunInterface, err := NewTun(t.config)
 	if err != nil {
+		return err
+	}
+
+	tunName, _ := tunInterface.Name()
+
+	// Bring interface up early so routes can be added later
+	if err := tunInterface.Start(); err != nil {
+		_ = tunInterface.Close()
 		return err
 	}
 
@@ -73,6 +82,12 @@ func (t *Handler) Init(ctx context.Context, pm policy.Manager, dispatcher routin
 		}
 		updater = &InterfaceUpdater{tunIndex: tunIndex, fixedName: t.config.AutoOutboundsInterface}
 		updater.Update()
+
+		// Start network monitor for auto-route
+		if t.config.AutoRoute {
+			updater.StartMonitor()
+		}
+
 		internet.RegisterDialerController(func(network, address string, c syscall.RawConn) error {
 			iface := updater.Get()
 			if iface == nil {
@@ -86,6 +101,48 @@ func (t *Handler) Init(ctx context.Context, pm policy.Manager, dispatcher routin
 				}
 			})
 		})
+
+		// Auto-route: build and apply OS-level routes
+		if t.config.AutoRoute {
+			// Build routes covering all public IPs minus reserved ranges
+			universes := []netip.Prefix{
+				netip.MustParsePrefix("0.0.0.0/0"),
+				netip.MustParsePrefix("::/0"),
+			}
+			excludes := append(defaultIPv4Excludes, defaultIPv6Excludes...)
+			routes, err := BuildAutoRoutes(universes, excludes)
+			if err != nil {
+				_ = tunInterface.Close()
+				return err
+			}
+
+			// Determine tun prefixes from config (CIDR format, e.g. "172.18.0.1/30")
+			var prefix4, prefix6 netip.Prefix
+			for _, gw := range t.config.Gateway {
+				prefix, err := netip.ParsePrefix(gw)
+				if err != nil {
+					continue
+				}
+				if prefix.Addr().Is4() && !prefix4.IsValid() {
+					prefix4 = prefix
+				} else if prefix.Addr().Is6() && !prefix6.IsValid() {
+					prefix6 = prefix
+				}
+			}
+
+			// Create and apply route manager
+			routeMgr, err := NewRouteManager(tunName, tunIndex)
+			if err != nil {
+				_ = tunInterface.Close()
+				return err
+			}
+			if err := routeMgr.Apply(routes, prefix4, prefix6); err != nil {
+				_ = routeMgr.Close()
+				_ = tunInterface.Close()
+				return err
+			}
+			t.routeMgr = routeMgr
+		}
 	}
 
 	errors.LogInfo(t.ctx, tunName, " created")
@@ -101,13 +158,6 @@ func (t *Handler) Init(ctx context.Context, pm policy.Manager, dispatcher routin
 	}
 
 	err = tunStack.Start()
-	if err != nil {
-		_ = tunStack.Close()
-		_ = tunInterface.Close()
-		return err
-	}
-
-	err = tunInterface.Start()
 	if err != nil {
 		_ = tunStack.Close()
 		_ = tunInterface.Close()
@@ -167,6 +217,14 @@ func (t *Handler) HandleConnection(conn net.Conn, destination net.Destination) {
 
 // Close implements common.Closable.
 func (t *Handler) Close() error {
+	// Close route manager first (routes before stack/tun)
+	if t.routeMgr != nil {
+		_ = t.routeMgr.Close()
+	}
+	// Stop network monitor
+	if updater != nil {
+		updater.StopMonitor()
+	}
 	return errors.Combine(t.stack.Close(), t.tun.Close())
 }
 
