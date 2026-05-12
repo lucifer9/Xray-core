@@ -11,6 +11,7 @@ type TunConfig struct {
 	Gateway                []string `json:"gateway"`
 	DNS                    []string `json:"dns"`
 	UserLevel              uint32   `json:"userLevel"`
+	EnableICMPForwarding   bool     `json:"enableICMPForwarding"`
 	AutoSystemRoutingTable []string `json:"autoSystemRoutingTable"`
 	AutoOutboundsInterface *string  `json:"autoOutboundsInterface"`
 	AutoRoute              bool     `json:"autoRoute"`
@@ -23,6 +24,7 @@ func (v *TunConfig) Build() (proto.Message, error) {
 		Gateway:                v.Gateway,
 		DNS:                    v.DNS,
 		UserLevel:              v.UserLevel,
+		EnableIcmpForwarding:   v.EnableICMPForwarding,
 		AutoSystemRoutingTable: v.AutoSystemRoutingTable,
 		AutoRoute:              v.AutoRoute,
 	}

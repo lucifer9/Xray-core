@@ -20,6 +20,17 @@ import (
 	"gvisor.dev/gvisor/pkg/waiter"
 )
 
+// icmpForwarderSetup is set by icmp_forwarder.go's init() to the
+// platform-specific ICMP forwarding handler.
+var icmpForwarderSetup func(ctx context.Context, ipStack *stack.Stack, tunName string)
+
+// setupICMPForwarder sets up ICMP Echo forwarding through the physical interface.
+func setupICMPForwarder(ctx context.Context, ipStack *stack.Stack, tunName string) {
+	if icmpForwarderSetup != nil {
+		icmpForwarderSetup(ctx, ipStack, tunName)
+	}
+}
+
 const (
 	defaultNIC tcpip.NICID = 1
 
@@ -120,6 +131,12 @@ func (t *stackGVisor) Start() error {
 	})
 	ipStack.SetTransportProtocolHandler(icmp.ProtocolNumber4, t.handleICMPv4Packet)
 	ipStack.SetTransportProtocolHandler(icmp.ProtocolNumber6, t.handleICMPv6Packet)
+
+	// ICMP forwarding (platform-specific, opt-in via config)
+	if t.handler.config.GetEnableIcmpForwarding() {
+		tunName, _ := t.tun.Name()
+		setupICMPForwarder(t.ctx, ipStack, tunName)
+	}
 
 	t.stack = ipStack
 	t.endpoint = linkEndpoint
