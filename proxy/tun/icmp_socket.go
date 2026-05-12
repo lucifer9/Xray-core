@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && (!linux || android)
 
 package tun
 
@@ -26,6 +26,10 @@ func createRawSocket(dst netip.Addr, ctx context.Context) (rawSocket, error) {
 
 	fd, err := unix.Socket(domain, unix.SOCK_RAW, proto)
 	if err != nil {
+		return nil, err
+	}
+	if err = enableICMPBypassRouting(fd); err != nil {
+		unix.Close(fd)
 		return nil, err
 	}
 
