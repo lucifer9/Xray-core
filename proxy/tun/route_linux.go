@@ -8,11 +8,13 @@ import (
 	"net"
 	"net/netip"
 
-	xrayerrors "github.com/xtls/xray-core/common/errors"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
+	xrayerrors "github.com/xtls/xray-core/common/errors"
 	"golang.org/x/sys/unix"
 )
+
+const autoRouteBypassPriority = 120
 
 type linuxRouteManager struct {
 	tunName  string
@@ -29,6 +31,17 @@ func NewRouteManager(tunName string, tunIndex int) (RouteManager, error) {
 		tunIndex: tunIndex,
 		table:    table,
 	}, nil
+}
+
+func newICMPBypassRule(family int) *netlink.Rule {
+	mask := uint32(0xffffffff)
+	rule := netlink.NewRule()
+	rule.Priority = 90
+	rule.Mark = icmpBypassMark
+	rule.Mask = &mask
+	rule.Table = unix.RT_TABLE_MAIN
+	rule.Family = family
+	return rule
 }
 
 func (m *linuxRouteManager) Apply(routes []netip.Prefix, prefix4, prefix6 netip.Prefix) error {
@@ -66,10 +79,19 @@ func (m *linuxRouteManager) Apply(routes []netip.Prefix, prefix4, prefix6 netip.
 
 	// IPv4 policy routing rules
 	if prefix4.IsValid() {
-		// iif=tun → NOP (prevent routing loops)
-		rule := &netlink.Rule{
+		// ICMP forwarder sockets are marked so their real outbound echo
+		// requests use the system routing table instead of being captured
+		// again by auto-route.
+		rule := newICMPBypassRule(unix.AF_INET)
+		if err := netlink.RuleAdd(rule); err != nil {
+			return xrayerrors.New("failed to add IPv4 ICMP bypass rule").Base(err)
+		}
+		m.rules = append(m.rules, rule)
+
+		// iif=tun → skip auto-route rules (prevent routing loops)
+		rule = &netlink.Rule{
 			Priority: 100, IifName: m.tunName,
-			Family: unix.AF_INET, Type: nl.FR_ACT_NOP, Goto: -1,
+			Family: unix.AF_INET, Goto: autoRouteBypassPriority,
 		}
 		if err := netlink.RuleAdd(rule); err != nil {
 			return xrayerrors.New("failed to add IPv4 loop prevention rule").Base(err)
@@ -100,46 +122,65 @@ func (m *linuxRouteManager) Apply(routes []netip.Prefix, prefix4, prefix6 netip.
 		// iif=lo src=tun_subnet → custom table
 		rule = &netlink.Rule{
 			Priority: 110, IifName: "lo",
-			Src: prefixToIPNet(prefix4.Masked()),
+			Src:   prefixToIPNet(prefix4.Masked()),
 			Table: m.table, Family: unix.AF_INET, Goto: -1,
 		}
 		if err := netlink.RuleAdd(rule); err != nil {
 			return xrayerrors.New("failed to add IPv4 tun subnet rule").Base(err)
 		}
 		m.rules = append(m.rules, rule)
+
+		// GOTO target used by rules that must bypass auto-route capture.
+		rule = &netlink.Rule{
+			Priority: autoRouteBypassPriority,
+			Family:   unix.AF_INET, Type: nl.FR_ACT_NOP, Goto: -1,
+		}
+		if err := netlink.RuleAdd(rule); err != nil {
+			return xrayerrors.New("failed to add IPv4 bypass target rule").Base(err)
+		}
+		m.rules = append(m.rules, rule)
 	}
 
 	// IPv6 policy routing rules
 	if prefix6.IsValid() {
-		// iif=tun → NOP (prevent routing loops)
-		rule := &netlink.Rule{
+		// ICMP forwarder sockets are marked so their real outbound echo
+		// requests use the system routing table instead of being captured
+		// again by auto-route.
+		rule := newICMPBypassRule(unix.AF_INET6)
+		if err := netlink.RuleAdd(rule); err != nil {
+			return xrayerrors.New("failed to add IPv6 ICMP bypass rule").Base(err)
+		}
+		m.rules = append(m.rules, rule)
+
+		// iif=tun → skip auto-route rules (prevent routing loops)
+		rule = &netlink.Rule{
 			Priority: 100, IifName: m.tunName,
-			Family: unix.AF_INET6, Type: nl.FR_ACT_NOP, Goto: -1,
+			Family: unix.AF_INET6, Goto: autoRouteBypassPriority,
 		}
 		if err := netlink.RuleAdd(rule); err != nil {
 			return xrayerrors.New("failed to add IPv6 loop prevention rule").Base(err)
 		}
 		m.rules = append(m.rules, rule)
 
-		// iif=lo src=::/1 → NOP (skip 0000:: - 7fff:ffff...)
+		// iif=lo src=::/1 → skip auto-route rules (0000:: - 7fff:ffff...)
 		rule = &netlink.Rule{
 			Priority: 100, IifName: "lo",
 			Src:    &net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(1, 128)},
-			Family: unix.AF_INET6, Type: nl.FR_ACT_NOP, Goto: -1,
+			Family: unix.AF_INET6, Goto: autoRouteBypassPriority,
 		}
 		if err := netlink.RuleAdd(rule); err != nil {
 			return xrayerrors.New("failed to add IPv6 ::/1 rule").Base(err)
 		}
 		m.rules = append(m.rules, rule)
 
-		// iif=lo src=8000::/1 → NOP (skip 8000:: - ffff:ffff...)
+		// iif=lo src=8000::/1 → skip auto-route rules (8000:: - ffff:ffff...)
 		rule = &netlink.Rule{
 			Priority: 100, IifName: "lo",
 			Src: &net.IPNet{
 				IP:   net.IP{0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 				Mask: net.CIDRMask(1, 128),
 			},
-			Family: unix.AF_INET6, Type: nl.FR_ACT_NOP, Goto: -1,
+			Family: unix.AF_INET6, Goto: autoRouteBypassPriority,
 		}
 		if err := netlink.RuleAdd(rule); err != nil {
 			return xrayerrors.New("failed to add IPv6 8000::/1 rule").Base(err)
@@ -149,7 +190,7 @@ func (m *linuxRouteManager) Apply(routes []netip.Prefix, prefix4, prefix6 netip.
 		// iif=lo src=tun_subnet → custom table
 		rule = &netlink.Rule{
 			Priority: 111, IifName: "lo",
-			Src: prefixToIPNet(prefix6.Masked()),
+			Src:   prefixToIPNet(prefix6.Masked()),
 			Table: m.table, Family: unix.AF_INET6, Goto: -1,
 		}
 		if err := netlink.RuleAdd(rule); err != nil {
@@ -164,6 +205,16 @@ func (m *linuxRouteManager) Apply(routes []netip.Prefix, prefix4, prefix6 netip.
 		}
 		if err := netlink.RuleAdd(rule); err != nil {
 			return xrayerrors.New("failed to add IPv6 catch-all rule").Base(err)
+		}
+		m.rules = append(m.rules, rule)
+
+		// GOTO target used by rules that must bypass auto-route capture.
+		rule = &netlink.Rule{
+			Priority: autoRouteBypassPriority,
+			Family:   unix.AF_INET6, Type: nl.FR_ACT_NOP, Goto: -1,
+		}
+		if err := netlink.RuleAdd(rule); err != nil {
+			return xrayerrors.New("failed to add IPv6 bypass target rule").Base(err)
 		}
 		m.rules = append(m.rules, rule)
 	}
