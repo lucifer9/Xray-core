@@ -3,10 +3,12 @@
 package tun
 
 import (
+	"context"
 	"fmt"
 	"math/rand/v2"
 	"net"
 	"net/netip"
+	"strings"
 
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
@@ -17,11 +19,12 @@ import (
 const autoRouteBypassPriority = 120
 
 type linuxRouteManager struct {
-	tunName  string
-	tunIndex int
-	table    int
-	routes   []*netlink.Route
-	rules    []*netlink.Rule
+	tunName       string
+	tunIndex      int
+	table         int
+	routes        []*netlink.Route
+	rules         []*netlink.Rule
+	cleanupScript string
 }
 
 func NewRouteManager(tunName string, tunIndex int) (RouteManager, error) {
@@ -219,20 +222,112 @@ func (m *linuxRouteManager) Apply(routes []netip.Prefix, prefix4, prefix6 netip.
 		m.rules = append(m.rules, rule)
 	}
 
+	m.ensureCleanupScript(context.Background())
 	return nil
 }
 
 func (m *linuxRouteManager) Close() error {
+	ctx := context.Background()
+	m.ensureCleanupScript(ctx)
+
 	var errs []error
+	for i := len(m.rules) - 1; i >= 0; i-- {
+		if err := netlink.RuleDel(m.rules[i]); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	for _, rt := range m.routes {
 		if err := netlink.RouteDel(rt); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	for _, rule := range m.rules {
-		if err := netlink.RuleDel(rule); err != nil {
-			errs = append(errs, err)
+	if err := xrayerrors.Combine(errs...); err != nil {
+		logAutoRouteCleanupScript(ctx, m.cleanupScript)
+		if m.cleanupScript != "" {
+			return xrayerrors.New("auto_route cleanup may be incomplete; run manually if needed: ", autoRouteCleanupCommand(m.cleanupScript)).Base(err)
+		}
+		return err
+	}
+	removeAutoRouteCleanupScript(ctx, m.cleanupScript)
+	m.cleanupScript = ""
+	return nil
+}
+
+func (m *linuxRouteManager) ensureCleanupScript(ctx context.Context) {
+	if m.cleanupScript != "" {
+		return
+	}
+	commands := m.cleanupCommands()
+	if len(commands) == 0 {
+		return
+	}
+	path, err := writeAutoRouteCleanupScript(ctx, m.tunName, commands)
+	if err != nil {
+		xrayerrors.LogWarningInner(ctx, err, "[tun] failed to write auto_route cleanup script")
+		return
+	}
+	m.cleanupScript = path
+}
+
+func (m *linuxRouteManager) cleanupCommands() []string {
+	if len(m.routes) == 0 && len(m.rules) == 0 {
+		return nil
+	}
+
+	commands := []string{"# Linux auto_route cleanup"}
+	for i := len(m.rules) - 1; i >= 0; i-- {
+		if command := linuxRuleDeleteCommand(m.rules[i]); command != "" {
+			commands = append(commands, command)
 		}
 	}
-	return xrayerrors.Combine(errs...)
+	commands = append(commands,
+		fmt.Sprintf("ip route flush table %d || true", m.table),
+		fmt.Sprintf("ip -6 route flush table %d || true", m.table),
+	)
+	return commands
+}
+
+func linuxRuleDeleteCommand(rule *netlink.Rule) string {
+	if rule == nil {
+		return ""
+	}
+
+	family := ""
+	switch rule.Family {
+	case unix.AF_INET:
+		family = "-4"
+	case unix.AF_INET6:
+		family = "-6"
+	default:
+		return ""
+	}
+
+	parts := []string{"ip", family, "rule", "del"}
+	if rule.Priority >= 0 {
+		parts = append(parts, "priority", fmt.Sprint(rule.Priority))
+	}
+	if rule.Mark != 0 || rule.Mask != nil {
+		if rule.Mask != nil {
+			parts = append(parts, "fwmark", fmt.Sprintf("0x%x/0x%x", rule.Mark, *rule.Mask))
+		} else {
+			parts = append(parts, "fwmark", fmt.Sprintf("0x%x", rule.Mark))
+		}
+	}
+	if rule.Invert {
+		parts = append(parts, "not")
+	}
+	if rule.IifName != "" {
+		parts = append(parts, "iif", shellQuote(rule.IifName))
+	}
+	if rule.Src != nil {
+		parts = append(parts, "from", rule.Src.String())
+	}
+	if rule.Goto >= 0 {
+		parts = append(parts, "goto", fmt.Sprint(rule.Goto))
+	}
+	if rule.Table != 0 {
+		parts = append(parts, "table", fmt.Sprint(rule.Table))
+	}
+
+	return strings.Join(parts, " ") + " || true"
 }

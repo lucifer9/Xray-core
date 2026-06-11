@@ -90,17 +90,33 @@ func (t *Handler) Start() error {
 	}
 
 	tunName, _ := tunInterface.Name()
+	var tunStack Stack
+	var routeMgr RouteManager
+	monitorStarted := false
+	cleanupOnError := true
+	defer func() {
+		if !cleanupOnError {
+			return
+		}
+		var errs []error
+		errs = append(errs, common.CloseIfExists(routeMgr))
+		if monitorStarted && updater != nil {
+			updater.StopMonitor()
+		}
+		errs = append(errs, common.CloseIfExists(tunStack), common.CloseIfExists(tunInterface))
+		if err := errors.Combine(errs...); err != nil {
+			errors.LogWarningInner(t.ctx, err, "[tun] failed to clean up after start failure")
+		}
+	}()
 
 	// Bring interface up early so routes can be added later
 	if err := tunInterface.Start(); err != nil {
-		_ = tunInterface.Close()
 		return err
 	}
 
 	if t.config.AutoOutboundsInterface != "" {
 		tunIndex, err := tunInterface.Index()
 		if err != nil {
-			_ = tunInterface.Close()
 			return err
 		}
 		if t.config.AutoOutboundsInterface == "auto" {
@@ -112,6 +128,7 @@ func (t *Handler) Start() error {
 		// Start network monitor for auto-route
 		if t.config.AutoRoute {
 			updater.StartMonitor()
+			monitorStarted = true
 		}
 
 		internet.RegisterDialerController(func(network, address string, c syscall.RawConn) error {
@@ -135,6 +152,10 @@ func (t *Handler) Start() error {
 
 		// Auto-route: build and apply OS-level routes
 		if t.config.AutoRoute {
+			if err := checkStaleAutoRouteCleanupScripts(t.ctx); err != nil {
+				return err
+			}
+
 			// Build routes covering all public IPs minus reserved ranges
 			universes := []netip.Prefix{
 				netip.MustParsePrefix("0.0.0.0/0"),
@@ -143,7 +164,6 @@ func (t *Handler) Start() error {
 			excludes := append(defaultIPv4Excludes, defaultIPv6Excludes...)
 			routes, err := BuildAutoRoutes(universes, excludes)
 			if err != nil {
-				_ = tunInterface.Close()
 				return err
 			}
 
@@ -162,17 +182,13 @@ func (t *Handler) Start() error {
 			}
 
 			// Create and apply route manager
-			routeMgr, err := NewRouteManager(tunName, tunIndex)
+			routeMgr, err = NewRouteManager(tunName, tunIndex)
 			if err != nil {
-				_ = tunInterface.Close()
 				return err
 			}
 			if err := routeMgr.Apply(routes, prefix4, prefix6); err != nil {
-				_ = routeMgr.Close()
-				_ = tunInterface.Close()
 				return err
 			}
-			t.routeMgr = routeMgr
 		}
 	}
 
@@ -182,21 +198,20 @@ func (t *Handler) Start() error {
 		Tun:         tunInterface,
 		IdleTimeout: t.policyManager.ForLevel(t.config.UserLevel).Timeouts.ConnectionIdle,
 	}
-	tunStack, err := NewStack(t.ctx, tunStackOptions, t)
+	tunStack, err = NewStack(t.ctx, tunStackOptions, t)
 	if err != nil {
-		_ = tunInterface.Close()
 		return err
 	}
 
 	err = tunStack.Start()
 	if err != nil {
-		_ = tunStack.Close()
-		_ = tunInterface.Close()
 		return err
 	}
 
 	t.stack = tunStack
 	t.tun = tunInterface
+	t.routeMgr = routeMgr
+	cleanupOnError = false
 
 	errors.LogInfo(t.ctx, tunName, " up")
 	return nil
