@@ -3,6 +3,8 @@
 package tun
 
 import (
+	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"syscall"
@@ -13,8 +15,15 @@ import (
 )
 
 type darwinRouteManager struct {
-	fd     int
-	routes []*route.RouteMessage
+	fd            int
+	routes        []*route.RouteMessage
+	cleanupRoutes []darwinCleanupRoute
+	cleanupScript string
+}
+
+type darwinCleanupRoute struct {
+	prefix  netip.Prefix
+	gateway netip.Addr
 }
 
 func NewRouteManager(tunName string, tunIndex int) (RouteManager, error) {
@@ -33,10 +42,12 @@ func (m *darwinRouteManager) Apply(routes []netip.Prefix, prefix4, prefix6 netip
 			Flags:   syscall.RTF_UP | syscall.RTF_GATEWAY | syscall.RTF_STATIC,
 		}
 
+		var cleanupRoute darwinCleanupRoute
 		if r.Addr().Is4() {
 			if !prefix4.IsValid() {
 				continue
 			}
+			cleanupRoute = darwinCleanupRoute{prefix: r.Masked(), gateway: prefix4.Addr()}
 			rm.Addrs = []route.Addr{
 				&route.Inet4Addr{IP: r.Addr().As4()},
 				&route.Inet4Addr{IP: prefix4.Addr().As4()},
@@ -46,6 +57,7 @@ func (m *darwinRouteManager) Apply(routes []netip.Prefix, prefix4, prefix6 netip
 			if !prefix6.IsValid() {
 				continue
 			}
+			cleanupRoute = darwinCleanupRoute{prefix: r.Masked(), gateway: prefix6.Addr()}
 			rm.Addrs = []route.Addr{
 				&route.Inet6Addr{IP: r.Addr().As16()},
 				&route.Inet6Addr{IP: prefix6.Addr().As16()},
@@ -64,18 +76,68 @@ func (m *darwinRouteManager) Apply(routes []netip.Prefix, prefix4, prefix6 netip
 		}
 
 		m.routes = append(m.routes, rm)
+		m.cleanupRoutes = append(m.cleanupRoutes, cleanupRoute)
 	}
 
+	m.ensureCleanupScript(context.Background())
 	return nil
 }
 
 func (m *darwinRouteManager) Close() error {
+	ctx := context.Background()
+	m.ensureCleanupScript(ctx)
+
+	var errs []error
 	for _, rm := range m.routes {
 		rm.Type = syscall.RTM_DELETE
-		_ = m.writeRouteMessage(rm) // Ignore ENOENT
+		if err := m.writeRouteMessage(rm); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	unix.Close(m.fd)
+	_ = unix.Close(m.fd)
+	if err := errors.Combine(errs...); err != nil {
+		logAutoRouteCleanupScript(ctx, m.cleanupScript)
+		if m.cleanupScript != "" {
+			return errors.New("auto_route cleanup may be incomplete; run manually if needed: ", autoRouteCleanupCommand(m.cleanupScript)).Base(err)
+		}
+		return err
+	}
+	removeAutoRouteCleanupScript(ctx, m.cleanupScript)
+	m.cleanupScript = ""
 	return nil
+}
+
+func (m *darwinRouteManager) ensureCleanupScript(ctx context.Context) {
+	if m.cleanupScript != "" {
+		return
+	}
+	commands := m.cleanupCommands()
+	if len(commands) == 0 {
+		return
+	}
+	path, err := writeAutoRouteCleanupScript(ctx, "utun", commands)
+	if err != nil {
+		errors.LogWarningInner(ctx, err, "[tun] failed to write auto_route cleanup script")
+		return
+	}
+	m.cleanupScript = path
+}
+
+func (m *darwinRouteManager) cleanupCommands() []string {
+	if len(m.cleanupRoutes) == 0 {
+		return nil
+	}
+
+	commands := []string{"# macOS auto_route cleanup"}
+	for i := len(m.cleanupRoutes) - 1; i >= 0; i-- {
+		route := m.cleanupRoutes[i]
+		family := "-inet6"
+		if route.prefix.Addr().Is4() {
+			family = "-inet"
+		}
+		commands = append(commands, fmt.Sprintf("route -n delete %s -net %s %s || true", family, shellQuote(route.prefix.String()), shellQuote(route.gateway.String())))
+	}
+	return commands
 }
 
 func (m *darwinRouteManager) writeRouteMessage(rm *route.RouteMessage) error {

@@ -283,7 +283,7 @@ func open(name string) (*os.File, error) {
 // setup configures the tun interface with MTU and IP addresses from gateway config.
 // Addresses are in CIDR format (e.g. "172.18.0.1/30", "fd00::1/126").
 // On macOS, the tun interface is point-to-point: local and remote addresses
-// are set to the gateway address itself (Addr == Dstaddr), matching sing-tun convention.
+// are set to the gateway address itself (Addr == Dstaddr)
 func setup(name string, MTU uint32, gateways []string) error {
 	if err := setMTU(name, MTU); err != nil {
 		return err
