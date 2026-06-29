@@ -20,4 +20,5 @@ message Config {
   // coexist with tools that advertise subnets via their own routing (e.g.
   // Tailscale subnet routing).
   repeated string route_exclude = 9;
+  bool enable_icmp_forwarding = 10;
 }
