@@ -87,6 +87,22 @@ func TestBuildAutoRoutes(t *testing.T) {
 		}
 	})
 
+	t.Run("Tailscale CGNAT range excluded for coexistence", func(t *testing.T) {
+		universes := []netip.Prefix{
+			netip.MustParsePrefix("0.0.0.0/0"),
+		}
+		routes, err := BuildAutoRoutes(universes, defaultIPv4Excludes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cgnat := netip.MustParsePrefix("100.64.0.0/10")
+		for _, r := range routes {
+			if r.Overlaps(cgnat) {
+				t.Fatalf("Tailscale CGNAT %v must be excluded for coexistence, got overlapping route %v", cgnat, r)
+			}
+		}
+	})
+
 	t.Run("no excludes returns universes", func(t *testing.T) {
 		universes := []netip.Prefix{
 			netip.MustParsePrefix("10.0.0.0/8"),

@@ -18,6 +18,10 @@ type RouteManager interface {
 var (
 	defaultIPv4Excludes = []netip.Prefix{
 		netip.MustParsePrefix("0.0.0.0/8"),
+		// Tailscale CGNAT range (RFC 6598). Excluding it lets traffic to
+		// Tailscale peers fall through our auto-route table and reach
+		// Tailscale's own table 52 via its catch-all ip rule.
+		netip.MustParsePrefix("100.64.0.0/10"),
 	}
 	defaultIPv6Excludes = []netip.Prefix{
 		netip.MustParsePrefix("::/8"),

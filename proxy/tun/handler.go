@@ -162,6 +162,13 @@ func (t *Handler) Start() error {
 				netip.MustParsePrefix("::/0"),
 			}
 			excludes := append(defaultIPv4Excludes, defaultIPv6Excludes...)
+			for _, ex := range t.config.RouteExclude {
+				p, perr := netip.ParsePrefix(ex)
+				if perr != nil {
+					return errors.New("invalid route_exclude prefix: ", ex).Base(perr)
+				}
+				excludes = append(excludes, p)
+			}
 			routes, err := BuildAutoRoutes(universes, excludes)
 			if err != nil {
 				return err

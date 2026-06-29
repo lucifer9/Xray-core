@@ -14,6 +14,8 @@ type TunConfig struct {
 	AutoSystemRoutingTable []string `json:"autoSystemRoutingTable"`
 	AutoOutboundsInterface *string  `json:"autoOutboundsInterface"`
 	AutoRoute              bool     `json:"autoRoute"`
+	// RouteExclude lists target CIDRs excluded from the tun routing table.
+	RouteExclude []string `json:"routeExclude"`
 }
 
 func (v *TunConfig) Build() (proto.Message, error) {
@@ -25,6 +27,7 @@ func (v *TunConfig) Build() (proto.Message, error) {
 		UserLevel:              v.UserLevel,
 		AutoSystemRoutingTable: v.AutoSystemRoutingTable,
 		AutoRoute:              v.AutoRoute,
+		RouteExclude:           v.RouteExclude,
 	}
 	if v.AutoOutboundsInterface != nil {
 		config.AutoOutboundsInterface = *v.AutoOutboundsInterface

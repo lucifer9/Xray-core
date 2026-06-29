@@ -83,5 +83,21 @@ func TestTunConfigAutoRoute(t *testing.T) {
 				AutoOutboundsInterface: "auto",
 			},
 		},
+		{
+			Input: `{
+				"name": "xray0",
+				"autoRoute": true,
+				"routeExclude": ["100.64.0.0/10", "192.168.50.0/24"]
+			}`,
+			Parser: loadJSON(creator),
+			Output: &tun.Config{
+				Name:                   "xray0",
+				MTU:                    1500,
+				Gateway:                []string{"198.18.0.1/16"},
+				AutoRoute:              true,
+				AutoOutboundsInterface: "auto",
+				RouteExclude:           []string{"100.64.0.0/10", "192.168.50.0/24"},
+			},
+		},
 	})
 }

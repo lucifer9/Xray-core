@@ -359,7 +359,7 @@ type addrLifetime6 struct {
 
 // setIPv4Address assigns an IPv4 address to the tun interface.
 // On macOS tun is point-to-point: Addr and Dstaddr are both set to the
-// gateway address, following sing-tun convention.
+// gateway address
 func setIPv4Address(name string, prefix netip.Prefix) error {
 	socket, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
 	if err != nil {

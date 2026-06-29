@@ -31,8 +31,13 @@ type Config struct {
 	AutoSystemRoutingTable []string               `protobuf:"bytes,6,rep,name=auto_system_routing_table,json=autoSystemRoutingTable,proto3" json:"auto_system_routing_table,omitempty"`
 	AutoOutboundsInterface string                 `protobuf:"bytes,7,opt,name=auto_outbounds_interface,json=autoOutboundsInterface,proto3" json:"auto_outbounds_interface,omitempty"`
 	AutoRoute              bool                   `protobuf:"varint,8,opt,name=auto_route,json=autoRoute,proto3" json:"auto_route,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// Target CIDRs excluded from the tun routing table. Traffic to these
+	// destinations falls through auto-route to lower-priority rules. Use this to
+	// coexist with tools that advertise subnets via their own routing (e.g.
+	// Tailscale subnet routing).
+	RouteExclude  []string `protobuf:"bytes,9,rep,name=route_exclude,json=routeExclude,proto3" json:"route_exclude,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Config) Reset() {
@@ -121,11 +126,18 @@ func (x *Config) GetAutoRoute() bool {
 	return false
 }
 
+func (x *Config) GetRouteExclude() []string {
+	if x != nil {
+		return x.RouteExclude
+	}
+	return nil
+}
+
 var File_proxy_tun_config_proto protoreflect.FileDescriptor
 
 const file_proxy_tun_config_proto_rawDesc = "" +
 	"\n" +
-	"\x16proxy/tun/config.proto\x12\x0exray.proxy.tun\"\x8d\x02\n" +
+	"\x16proxy/tun/config.proto\x12\x0exray.proxy.tun\"\xb2\x02\n" +
 	"\x06Config\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03MTU\x18\x02 \x01(\rR\x03MTU\x12\x18\n" +
@@ -136,7 +148,8 @@ const file_proxy_tun_config_proto_rawDesc = "" +
 	"\x19auto_system_routing_table\x18\x06 \x03(\tR\x16autoSystemRoutingTable\x128\n" +
 	"\x18auto_outbounds_interface\x18\a \x01(\tR\x16autoOutboundsInterface\x12\x1d\n" +
 	"\n" +
-	"auto_route\x18\b \x01(\bR\tautoRouteBL\n" +
+	"auto_route\x18\b \x01(\bR\tautoRoute\x12#\n" +
+	"\rroute_exclude\x18\t \x03(\tR\frouteExcludeBL\n" +
 	"\x12com.xray.proxy.tunP\x01Z#github.com/xtls/xray-core/proxy/tun\xaa\x02\x0eXray.Proxy.Tunb\x06proto3"
 
 var (

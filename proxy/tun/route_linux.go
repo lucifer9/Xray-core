@@ -47,6 +47,35 @@ func newICMPBypassRule(family int) *netlink.Rule {
 	return rule
 }
 
+// newMarkedBypassRule builds the rule that lets traffic already carrying a
+// non-zero fwmark skip auto-route capture. Such traffic belongs to another
+// fwmark-based policy router (notably Tailscale, which tags its own outbound
+// with 0x80000 and escapes via its own "fwmark 0x80000 lookup main" rule) and
+// must fall through to that tool's rules instead of being pulled into our tun
+// table.
+//
+// "fwmark 0/0xffffffff" matches fwmark==0; Invert turns it into fwmark!=0.
+// The goto jumps over all capture rules (pref 110-112) to the NOP target
+// (pref 120), after which the lookup continues to lower-priority rules such
+// as Tailscale's. This is what makes auto-route coexist with Tailscale
+// regardless of ip-rule priority ordering or which daemon started first.
+//
+// We use a single bypass rule instead of fwmark-filtering each capture rule
+// because the forwarded-traffic rule uses Invert ("not iif=lo"); adding a
+// fwmark clause there would yield OR semantics ("iif!=lo OR mark!=0") and
+// still capture marked traffic.
+func newMarkedBypassRule(family int) *netlink.Rule {
+	mask := uint32(0xffffffff)
+	rule := netlink.NewRule()
+	rule.Priority = 105
+	rule.Mark = 0
+	rule.Mask = &mask
+	rule.Invert = true
+	rule.Family = family
+	rule.Goto = autoRouteBypassPriority
+	return rule
+}
+
 func (m *linuxRouteManager) Apply(routes []netip.Prefix, prefix4, prefix6 netip.Prefix) error {
 	// Add routes (LinkIndex only, no Gw)
 	for _, r := range routes {
@@ -98,6 +127,14 @@ func (m *linuxRouteManager) Apply(routes []netip.Prefix, prefix4, prefix6 netip.
 		}
 		if err := netlink.RuleAdd(rule); err != nil {
 			return xrayerrors.New("failed to add IPv4 loop prevention rule").Base(err)
+		}
+		m.rules = append(m.rules, rule)
+
+		// fwmark!=0 (e.g. Tailscale's 0x80000) → skip auto-route so the
+		// marking tool's own rules handle it. See newMarkedBypassRule.
+		rule = newMarkedBypassRule(unix.AF_INET)
+		if err := netlink.RuleAdd(rule); err != nil {
+			return xrayerrors.New("failed to add IPv4 marked-bypass rule").Base(err)
 		}
 		m.rules = append(m.rules, rule)
 
@@ -187,6 +224,14 @@ func (m *linuxRouteManager) Apply(routes []netip.Prefix, prefix4, prefix6 netip.
 		}
 		if err := netlink.RuleAdd(rule); err != nil {
 			return xrayerrors.New("failed to add IPv6 8000::/1 rule").Base(err)
+		}
+		m.rules = append(m.rules, rule)
+
+		// fwmark!=0 (e.g. Tailscale's 0x80000) → skip auto-route so the
+		// marking tool's own rules handle it. See newMarkedBypassRule.
+		rule = newMarkedBypassRule(unix.AF_INET6)
+		if err := netlink.RuleAdd(rule); err != nil {
+			return xrayerrors.New("failed to add IPv6 marked-bypass rule").Base(err)
 		}
 		m.rules = append(m.rules, rule)
 
@@ -306,15 +351,15 @@ func linuxRuleDeleteCommand(rule *netlink.Rule) string {
 	if rule.Priority >= 0 {
 		parts = append(parts, "priority", fmt.Sprint(rule.Priority))
 	}
+	if rule.Invert {
+		parts = append(parts, "not")
+	}
 	if rule.Mark != 0 || rule.Mask != nil {
 		if rule.Mask != nil {
 			parts = append(parts, "fwmark", fmt.Sprintf("0x%x/0x%x", rule.Mark, *rule.Mask))
 		} else {
 			parts = append(parts, "fwmark", fmt.Sprintf("0x%x", rule.Mark))
 		}
-	}
-	if rule.Invert {
-		parts = append(parts, "not")
 	}
 	if rule.IifName != "" {
 		parts = append(parts, "iif", shellQuote(rule.IifName))

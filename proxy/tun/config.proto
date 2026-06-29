@@ -15,4 +15,9 @@ message Config {
   repeated string auto_system_routing_table = 6;
   string auto_outbounds_interface = 7;
   bool auto_route = 8;
+  // Target CIDRs excluded from the tun routing table. Traffic to these
+  // destinations falls through auto-route to lower-priority rules. Use this to
+  // coexist with tools that advertise subnets via their own routing (e.g.
+  // Tailscale subnet routing).
+  repeated string route_exclude = 9;
 }
