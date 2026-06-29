@@ -58,6 +58,8 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 	cache := buf.New()
 	defer cache.Release()
 
+	sawInitial := false
+
 	// Parse QUIC packets
 	for len(b) > 0 {
 		buffer := buf.FromBytes(b)
@@ -129,6 +131,8 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 			b = restPayload
 			continue
 		}
+
+		sawInitial = true
 
 		var salt []byte
 		if versionNumber == version1 {
@@ -262,8 +266,17 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 		}
 		return &SniffHeader{domain: tlsHdr.Domain()}, nil
 	}
-	// All payload is parsed as valid QUIC packets, but we need more packets for crypto data to read client hello.
-	return nil, protocol.ErrProtoNeedMoreData
+	// All coalesced packets have been parsed.
+	if sawInitial {
+		// We saw at least one Initial packet but could not parse the ClientHello.
+		// The CRYPTO data may span multiple datagrams; the dispatcher's cachedReader
+		// accumulates data across ErrProtoNeedMoreData rounds, so a subsequent call
+		// with the combined payload may succeed.
+		return nil, protocol.ErrProtoNeedMoreData
+	}
+	// Only non-Initial packets were seen (Handshake, 0-RTT, Retry).
+	// QUIC is confirmed but there is no CRYPTO data to wait for.
+	return &SniffHeader{}, nil
 }
 
 func hkdfExpandLabel(hash crypto.Hash, secret, context []byte, label string, length int) []byte {
