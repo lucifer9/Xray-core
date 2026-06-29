@@ -35,6 +35,7 @@ type Handler struct {
 	sniffingRequest session.SniffingRequest
 	uplinkCounter   stats.Counter
 	downlinkCounter stats.Counter
+	routeMgr        RouteManager
 }
 
 // ConnectionHandler interface with the only method that stack is going to push new connections to
@@ -83,16 +84,39 @@ func (t *Handler) Init(ctx context.Context, pm policy.Manager, dispatcher routin
 }
 
 func (t *Handler) Start() error {
-	tunName := t.config.Name
 	tunInterface, err := NewTun(t.config)
 	if err != nil {
+		return err
+	}
+
+	tunName, _ := tunInterface.Name()
+	var tunStack Stack
+	var routeMgr RouteManager
+	monitorStarted := false
+	cleanupOnError := true
+	defer func() {
+		if !cleanupOnError {
+			return
+		}
+		var errs []error
+		errs = append(errs, common.CloseIfExists(routeMgr))
+		if monitorStarted && updater != nil {
+			updater.StopMonitor()
+		}
+		errs = append(errs, common.CloseIfExists(tunStack), common.CloseIfExists(tunInterface))
+		if err := errors.Combine(errs...); err != nil {
+			errors.LogWarningInner(t.ctx, err, "[tun] failed to clean up after start failure")
+		}
+	}()
+
+	// Bring interface up early so routes can be added later
+	if err := tunInterface.Start(); err != nil {
 		return err
 	}
 
 	if t.config.AutoOutboundsInterface != "" {
 		tunIndex, err := tunInterface.Index()
 		if err != nil {
-			_ = tunInterface.Close()
 			return err
 		}
 		if t.config.AutoOutboundsInterface == "auto" {
@@ -100,6 +124,13 @@ func (t *Handler) Start() error {
 		}
 		updater = &InterfaceUpdater{tunIndex: tunIndex, fixedName: t.config.AutoOutboundsInterface}
 		updater.Update()
+
+		// Start network monitor for auto-route
+		if t.config.AutoRoute {
+			updater.StartMonitor()
+			monitorStarted = true
+		}
+
 		internet.RegisterDialerController(func(network, address string, c syscall.RawConn) error {
 			iface := updater.Get()
 			if iface == nil {
@@ -118,6 +149,54 @@ func (t *Handler) Start() error {
 				}
 			})
 		})
+
+		// Auto-route: build and apply OS-level routes
+		if t.config.AutoRoute {
+			if err := checkStaleAutoRouteCleanupScripts(t.ctx); err != nil {
+				return err
+			}
+
+			// Build routes covering all public IPs minus reserved ranges
+			universes := []netip.Prefix{
+				netip.MustParsePrefix("0.0.0.0/0"),
+				netip.MustParsePrefix("::/0"),
+			}
+			excludes := append(defaultIPv4Excludes, defaultIPv6Excludes...)
+			for _, ex := range t.config.RouteExclude {
+				p, perr := netip.ParsePrefix(ex)
+				if perr != nil {
+					return errors.New("invalid route_exclude prefix: ", ex).Base(perr)
+				}
+				excludes = append(excludes, p)
+			}
+			routes, err := BuildAutoRoutes(universes, excludes)
+			if err != nil {
+				return err
+			}
+
+			// Determine tun prefixes from config (CIDR format, e.g. "172.18.0.1/30")
+			var prefix4, prefix6 netip.Prefix
+			for _, gw := range t.config.Gateway {
+				prefix, err := netip.ParsePrefix(gw)
+				if err != nil {
+					continue
+				}
+				if prefix.Addr().Is4() && !prefix4.IsValid() {
+					prefix4 = prefix
+				} else if prefix.Addr().Is6() && !prefix6.IsValid() {
+					prefix6 = prefix
+				}
+			}
+
+			// Create and apply route manager
+			routeMgr, err = NewRouteManager(tunName, tunIndex)
+			if err != nil {
+				return err
+			}
+			if err := routeMgr.Apply(routes, prefix4, prefix6); err != nil {
+				return err
+			}
+		}
 	}
 
 	errors.LogInfo(t.ctx, tunName, " created")
@@ -126,28 +205,20 @@ func (t *Handler) Start() error {
 		Tun:         tunInterface,
 		IdleTimeout: t.policyManager.ForLevel(t.config.UserLevel).Timeouts.ConnectionIdle,
 	}
-	tunStack, err := NewStack(t.ctx, tunStackOptions, t)
+	tunStack, err = NewStack(t.ctx, tunStackOptions, t)
 	if err != nil {
-		_ = tunInterface.Close()
 		return err
 	}
 
 	err = tunStack.Start()
 	if err != nil {
-		_ = tunStack.Close()
-		_ = tunInterface.Close()
-		return err
-	}
-
-	err = tunInterface.Start()
-	if err != nil {
-		_ = tunStack.Close()
-		_ = tunInterface.Close()
 		return err
 	}
 
 	t.stack = tunStack
 	t.tun = tunInterface
+	t.routeMgr = routeMgr
+	cleanupOnError = false
 
 	errors.LogInfo(t.ctx, tunName, " up")
 	return nil
@@ -214,7 +285,11 @@ func (t *Handler) HandleConnection(conn net.Conn, destination net.Destination) {
 
 // Close implements common.Closable.
 func (t *Handler) Close() error {
-	return errors.Combine(common.CloseIfExists(t.stack), common.CloseIfExists(t.tun))
+	routeErr := common.CloseIfExists(t.routeMgr)
+	if updater != nil {
+		updater.StopMonitor()
+	}
+	return errors.Combine(routeErr, common.CloseIfExists(t.stack), common.CloseIfExists(t.tun))
 }
 
 // Network implements proxy.Inbound

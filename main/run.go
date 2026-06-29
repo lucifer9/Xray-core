@@ -88,6 +88,9 @@ func executeRun(cmd *base.Command, args []string) {
 	}
 
 	if err := server.Start(); err != nil {
+		if closeErr := server.Close(); closeErr != nil {
+			fmt.Println("Failed to clean up after start failure:", closeErr)
+		}
 		fmt.Println("Failed to start:", err)
 		os.Exit(-1)
 	}
