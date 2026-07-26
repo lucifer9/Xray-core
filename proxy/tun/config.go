@@ -31,6 +31,7 @@ type outboundCarrierPolicy struct {
 	mu             sync.RWMutex
 	ipv4           *carrierInterface
 	ipv6           *carrierInterface
+	excluded       []netip.Prefix
 	binder         func(network, address string, fd uintptr, iface *net.Interface) error
 	close          sync.Once
 	control        interface{ Close() error }
@@ -44,12 +45,17 @@ var outboundCarrierOwnership struct {
 	owner *outboundCarrierPolicy
 }
 
-func acquireOutboundCarrierPolicy() (*outboundCarrierPolicy, error) {
-	return acquireOutboundCarrierPolicyWithBinder(setinterface)
+func acquireOutboundCarrierPolicy(excluded []string) (*outboundCarrierPolicy, error) {
+	return acquireOutboundCarrierPolicyWithBinder(excluded, setinterface)
 }
 
-func acquireOutboundCarrierPolicyWithBinder(binder func(string, string, uintptr, *net.Interface) error) (*outboundCarrierPolicy, error) {
+func acquireOutboundCarrierPolicyWithBinder(excluded []string, binder func(string, string, uintptr, *net.Interface) error) (*outboundCarrierPolicy, error) {
+	excludeIPv4, excludeIPv6, err := parseRoutePrefixes("Excluded route prefix", excluded)
+	if err != nil {
+		return nil, err
+	}
 	policy := &outboundCarrierPolicy{
+		excluded:    append(normalizePrefixes(excludeIPv4), normalizePrefixes(excludeIPv6)...),
 		binder:      binder,
 		subscribers: make(map[uint64]func(carrierFamily, *carrierInterface)),
 	}
@@ -128,8 +134,18 @@ func sameCarrierInterface(left, right *carrierInterface) bool {
 	return left.Name == right.Name && left.Index == right.Index
 }
 
+func (p *outboundCarrierPolicy) isExcluded(destination netip.Addr) bool {
+	for _, excluded := range p.excluded {
+		if excluded.Contains(destination.Unmap()) {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *outboundCarrierPolicy) usesSystemPath(destination netip.Addr) bool {
-	return destination.Unmap().IsLoopback()
+	destination = destination.Unmap()
+	return destination.IsLoopback() || p.isExcluded(destination)
 }
 
 func (p *outboundCarrierPolicy) subscribeWithSnapshot(subscriber func(carrierFamily, *carrierInterface)) (func(), map[carrierFamily]*carrierInterface) {
@@ -304,7 +320,7 @@ func startOutboundCarrierPolicy(tunInterface Tun, config *Config) (*outboundCarr
 	if fixedName == "auto" {
 		fixedName = ""
 	}
-	policy, err := acquireOutboundCarrierPolicy()
+	policy, err := acquireOutboundCarrierPolicy(config.AutoSystemRoutingTableExclude)
 	if err != nil {
 		return nil, nil, err
 	}
