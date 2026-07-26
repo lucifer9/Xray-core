@@ -4,8 +4,6 @@ package tun
 
 import (
 	"context"
-	"slices"
-	"strings"
 	"sync"
 
 	"github.com/xtls/xray-core/common/errors"
@@ -19,89 +17,116 @@ import (
 // where the routes lead, into the TUN, from that interface's address, and
 // drops what comes back to that address through the TUN, so they stall.
 //
-// For the IP versions routed to the TUN, weak host send is turned off on the
-// bound interface while the TUN runs, and turned on again when the TUN stops
-// or another interface takes over. Forwarding is what Mobile Hotspot and
-// Internet Connection Sharing need, so it is only reported.
+// For the IP versions routed to the TUN, weak host send is turned off on that
+// version's Outbound carrier interface while the TUN runs, and turned on again
+// when the TUN stops or another interface takes over. Forwarding is what
+// Mobile Hotspot and Internet Connection Sharing need, so it is only reported.
 type outboundGuard struct {
 	sync.Mutex
-	families   []winipcfg.AddressFamily
-	luid       winipcfg.LUID            // of the interface last checked
-	name       string                   // of that interface
-	turnedOff  []winipcfg.AddressFamily // where weak host send was turned off on it
-	forwarding bool                     // whether forwarding was on there
-	stopped    bool
+	policy   *outboundCarrierPolicy
+	families []winipcfg.AddressFamily
+	bound    map[winipcfg.AddressFamily]guardedCarrier
+	stopped  bool
 }
 
-// check turns weak host send off on the bound interface, and warns when
+// guardedCarrier is the interface last checked for an IP version.
+type guardedCarrier struct {
+	luid       winipcfg.LUID
+	name       string
+	turnedOff  bool // whether weak host send was turned off on it
+	forwarding bool // whether forwarding was on there
+}
+
+// start guards families, the IP versions routed to the TUN, on the carriers
+// of policy.
+func (g *outboundGuard) start(policy *outboundCarrierPolicy, families []winipcfg.AddressFamily) {
+	g.Lock()
+	g.policy = policy
+	g.families = families
+	g.bound = make(map[winipcfg.AddressFamily]guardedCarrier, len(families))
+	g.Unlock()
+	g.check()
+}
+
+// check turns weak host send off on the carrier interfaces, and warns when
 // forwarding comes on there, but not again while it stays on.
 func (g *outboundGuard) check() {
 	g.Lock()
 	defer g.Unlock()
-	if g.stopped {
+	if g.stopped || g.policy == nil {
 		return
 	}
-	var luid winipcfg.LUID
-	var name string
-	if iface := updater.Get(); iface != nil {
-		luid, _ = winipcfg.LUIDFromIndex(uint32(iface.Index))
-		name = iface.Name
-	}
-	if luid != g.luid {
-		g.restoreLocked()
-		g.luid, g.name = luid, name
-		g.forwarding = false // to warn about the new interface as well
-	}
-	if luid == 0 {
-		return
-	}
-	var forwarding []string
 	for _, family := range g.families {
-		row, err := luid.IPInterface(family)
-		if err != nil {
-			continue // the interface lacks that IP version
+		var luid winipcfg.LUID
+		var name string
+		if carrier := g.policy.carrier(carrierFamilyOf(family)); carrier != nil {
+			luid, _ = winipcfg.LUIDFromIndex(uint32(carrier.Index))
+			name = carrier.Name
 		}
-		if row.ForwardingEnabled {
-			forwarding = append(forwarding, familyName(family))
+		bound := g.bound[family]
+		if luid != bound.luid {
+			restoreWeakHostSend(family, bound)
+			bound = guardedCarrier{luid: luid, name: name}
 		}
-		if !row.WeakHostSend {
-			continue
-		}
-		if err := setWeakHostSend(row, false); err != nil {
-			errors.LogWarningInner(context.Background(), err, "[tun] unable to turn weak host send off for ", familyName(family), " on ", name)
-			continue
-		}
-		if !slices.Contains(g.turnedOff, family) {
-			g.turnedOff = append(g.turnedOff, family)
-			errors.LogInfo(context.Background(), "[tun] weak host send turned off for ", familyName(family), " on ", name, " while the TUN runs, as Windows would ignore autoOutboundsInterface")
-		}
+		g.bound[family] = g.checkCarrier(family, bound)
 	}
-	wasOn := g.forwarding
-	g.forwarding = len(forwarding) > 0
-	if g.forwarding && !wasOn {
-		errors.LogWarning(context.Background(), "[tun] forwarding is on for ", strings.Join(forwarding, " and "), " on ", name, " (Mobile Hotspot and Internet Connection Sharing turn it on), so Windows ignores autoOutboundsInterface there, and Xray's own connections go into the TUN and stall: turn the hotspot off, or have it share the TUN instead of ", name)
+}
+
+func (g *outboundGuard) checkCarrier(family winipcfg.AddressFamily, bound guardedCarrier) guardedCarrier {
+	if bound.luid == 0 {
+		return bound
 	}
+	row, err := bound.luid.IPInterface(family)
+	if err != nil {
+		return bound // the interface lacks that IP version
+	}
+	if row.ForwardingEnabled && !bound.forwarding {
+		errors.LogWarning(context.Background(), "[tun] forwarding is on for ", familyName(family), " on ", bound.name, " (Mobile Hotspot and Internet Connection Sharing turn it on), so Windows ignores autoOutboundsInterface there, and Xray's own connections go into the TUN and stall: turn the hotspot off, or have it share the TUN instead of ", bound.name)
+	}
+	bound.forwarding = row.ForwardingEnabled
+	if !row.WeakHostSend {
+		return bound
+	}
+	if err := setWeakHostSend(row, false); err != nil {
+		errors.LogWarningInner(context.Background(), err, "[tun] unable to turn weak host send off for ", familyName(family), " on ", bound.name)
+		return bound
+	}
+	if !bound.turnedOff {
+		bound.turnedOff = true
+		errors.LogInfo(context.Background(), "[tun] weak host send turned off for ", familyName(family), " on ", bound.name, " while the TUN runs, as Windows would ignore autoOutboundsInterface")
+	}
+	return bound
 }
 
 // restore turns weak host send on again where check turned it off, for good.
 func (g *outboundGuard) restore() {
 	g.Lock()
 	defer g.Unlock()
-	g.restoreLocked()
+	for family, bound := range g.bound {
+		restoreWeakHostSend(family, bound)
+	}
+	g.bound = nil
 	g.stopped = true
 }
 
-func (g *outboundGuard) restoreLocked() {
-	for _, family := range g.turnedOff {
-		row, err := g.luid.IPInterface(family)
-		if err == nil {
-			err = setWeakHostSend(row, true)
-		}
-		if err != nil {
-			errors.LogWarningInner(context.Background(), err, "[tun] unable to turn weak host send on again for ", familyName(family), " on ", g.name)
-		}
+func restoreWeakHostSend(family winipcfg.AddressFamily, bound guardedCarrier) {
+	if !bound.turnedOff {
+		return
 	}
-	g.turnedOff = nil
+	row, err := bound.luid.IPInterface(family)
+	if err == nil {
+		err = setWeakHostSend(row, true)
+	}
+	if err != nil {
+		errors.LogWarningInner(context.Background(), err, "[tun] unable to turn weak host send on again for ", familyName(family), " on ", bound.name)
+	}
+}
+
+func carrierFamilyOf(family winipcfg.AddressFamily) carrierFamily {
+	if family == windows.AF_INET {
+		return carrierIPv4
+	}
+	return carrierIPv6
 }
 
 func setWeakHostSend(row *winipcfg.MibIPInterfaceRow, on bool) error {

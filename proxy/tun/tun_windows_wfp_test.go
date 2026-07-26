@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"syscall"
 	"testing"
 	"unsafe"
 
@@ -145,6 +146,30 @@ func TestDNSOutsideTUN(t *testing.T) {
 	if got := dnsOutsideTUN(servers, prefixes); !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
+}
+
+func TestResolveOnOwnRequiredController(t *testing.T) {
+	saved := resolveOnOwn()
+	t.Cleanup(saved.restore)
+	controlErr := go_errors.New("required DNS control failed")
+	registration, err := internet.RegisterRequiredDialerController(func(string, string, syscall.RawConn) error {
+		return controlErr
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registration.Close() })
+	if _, err := net.DefaultResolver.Dial(context.Background(), "udp", "127.0.0.1:53"); !go_errors.Is(err, controlErr) {
+		t.Fatalf("DNS dial error = %v, want required controller error", err)
+	}
+	if err := registration.Close(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.DefaultResolver.Dial(context.Background(), "udp", "127.0.0.1:53")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
 }
 
 func TestResolveOnOwn(t *testing.T) {
