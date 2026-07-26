@@ -34,6 +34,7 @@ type Config struct {
 	AutoSystemDnsToGateway        bool                   `protobuf:"varint,9,opt,name=auto_system_dns_to_gateway,json=autoSystemDnsToGateway,proto3" json:"auto_system_dns_to_gateway,omitempty"`
 	AutoSystemWfpBlockLeak        []string               `protobuf:"bytes,10,rep,name=auto_system_wfp_block_leak,json=autoSystemWfpBlockLeak,proto3" json:"auto_system_wfp_block_leak,omitempty"`
 	AutoSystemRoutingTableExclude []string               `protobuf:"bytes,12,rep,name=auto_system_routing_table_exclude,json=autoSystemRoutingTableExclude,proto3" json:"auto_system_routing_table_exclude,omitempty"`
+	EnableIcmpEchoForwarding      bool                   `protobuf:"varint,11,opt,name=enable_icmp_echo_forwarding,json=enableIcmpEchoForwarding,proto3" json:"enable_icmp_echo_forwarding,omitempty"`
 	unknownFields                 protoimpl.UnknownFields
 	sizeCache                     protoimpl.SizeCache
 }
@@ -145,11 +146,18 @@ func (x *Config) GetAutoSystemRoutingTableExclude() []string {
 	return nil
 }
 
+func (x *Config) GetEnableIcmpEchoForwarding() bool {
+	if x != nil {
+		return x.EnableIcmpEchoForwarding
+	}
+	return false
+}
+
 var File_proxy_tun_config_proto protoreflect.FileDescriptor
 
 const file_proxy_tun_config_proto_rawDesc = "" +
 	"\n" +
-	"\x16proxy/tun/config.proto\x12\x0exray.proxy.tun\"\xc4\x03\n" +
+	"\x16proxy/tun/config.proto\x12\x0exray.proxy.tun\"\x83\x04\n" +
 	"\x06Config\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03MTU\x18\x02 \x01(\rR\x03MTU\x12\x18\n" +
@@ -163,7 +171,8 @@ const file_proxy_tun_config_proto_rawDesc = "" +
 	"\x1aauto_system_dns_to_gateway\x18\t \x01(\bR\x16autoSystemDnsToGateway\x12:\n" +
 	"\x1aauto_system_wfp_block_leak\x18\n" +
 	" \x03(\tR\x16autoSystemWfpBlockLeak\x12H\n" +
-	"!auto_system_routing_table_exclude\x18\f \x03(\tR\x1dautoSystemRoutingTableExcludeBL\n" +
+	"!auto_system_routing_table_exclude\x18\f \x03(\tR\x1dautoSystemRoutingTableExclude\x12=\n" +
+	"\x1benable_icmp_echo_forwarding\x18\v \x01(\bR\x18enableIcmpEchoForwardingBL\n" +
 	"\x12com.xray.proxy.tunP\x01Z#github.com/xtls/xray-core/proxy/tun\xaa\x02\x0eXray.Proxy.Tunb\x06proto3"
 
 var (
