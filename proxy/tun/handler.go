@@ -2,6 +2,7 @@ package tun
 
 import (
 	"context"
+	"net/netip"
 	"sync"
 
 	"github.com/xtls/xray-core/common"
@@ -137,9 +138,10 @@ func (t *Handler) Start() error {
 		}
 	}
 
+	var prober echoProber
 	var tunStack Stack
 	cleanup := func() error {
-		return closeTunResources(tunStack, tracker, tunInterface, policy)
+		return closeTunResources(tunStack, prober, tracker, tunInterface, policy)
 	}
 
 	errors.LogInfo(t.ctx, tunName, " created")
@@ -148,6 +150,28 @@ func (t *Handler) Start() error {
 		Tun:         tunInterface,
 		MTU:         t.config.MTU,
 		IdleTimeout: t.policyManager.ForLevel(t.config.UserLevel).Timeouts.ConnectionIdle,
+	}
+	for _, gateway := range t.config.Gateway {
+		prefix, err := netip.ParsePrefix(gateway)
+		if err != nil {
+			continue
+		}
+		if addr := prefix.Addr(); addr.Is4() {
+			tunStackOptions.Gateway4 = addr
+		} else {
+			tunStackOptions.Gateway6 = addr
+		}
+	}
+	if t.config.EnableIcmpEchoForwarding {
+		if policy == nil {
+			return errors.Combine(errors.New("Direct Echo probes require an Outbound carrier policy"), cleanup())
+		}
+		directProber, err := newDirectEchoEngine(policy, newPlatformEchoTransportFactory())
+		if err != nil {
+			return errors.Combine(errors.New("failed to initialize Direct Echo probes").Base(err), cleanup())
+		}
+		prober = directProber
+		tunStackOptions.EchoProber = directProber
 	}
 	tunStack, err = NewStack(t.ctx, tunStackOptions, t)
 	if err != nil {
@@ -183,10 +207,12 @@ func (t *Handler) Start() error {
 	return nil
 }
 
-func closeTunResources(tunStack Stack, tracker outboundCarrierTracker, tunInterface Tun, policy *outboundCarrierPolicy) error {
+func closeTunResources(tunStack Stack, prober echoProber, tracker outboundCarrierTracker, tunInterface Tun, policy *outboundCarrierPolicy) error {
 	var stackErr error
 	if tunStack != nil {
 		stackErr = tunStack.Close()
+	} else {
+		stackErr = common.CloseIfExists(prober)
 	}
 	var trackerErr error
 	if tracker != nil {
@@ -254,7 +280,7 @@ func (t *Handler) HandleConnection(conn net.Conn, destination net.Destination) {
 // Close implements common.Closable.
 func (t *Handler) Close() error {
 	t.closeOnce.Do(func() {
-		t.closeErr = closeTunResources(t.stack, t.carrierTracker, t.tun, t.carrierPolicy)
+		t.closeErr = closeTunResources(t.stack, nil, t.carrierTracker, t.tun, t.carrierPolicy)
 	})
 	return t.closeErr
 }

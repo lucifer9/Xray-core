@@ -193,6 +193,17 @@ func (s *closingStack) Close() error {
 	return nil
 }
 
+type closingProber struct {
+	events *[]string
+}
+
+func (*closingProber) Probe(echoRequest, func(echoResult)) error { return nil }
+
+func (p *closingProber) Close() error {
+	*p.events = append(*p.events, "prober")
+	return nil
+}
+
 type ownershipCheckingTun struct {
 	events              *[]string
 	acquiredDuringClose bool
@@ -256,7 +267,7 @@ func TestHandlerCloseKeepsCarrierPolicyUntilTunRoutesAreRemoved(t *testing.T) {
 }
 
 func TestStartupCleanupKeepsCarrierPolicyUntilTunRoutesAreRemoved(t *testing.T) {
-	events := make([]string, 0, 2)
+	events := make([]string, 0, 3)
 	policy, err := acquireOutboundCarrierPolicyWithBinder(nil, func(string, string, uintptr, *net.Interface) error { return nil })
 	if err != nil {
 		t.Fatal(err)
@@ -264,14 +275,14 @@ func TestStartupCleanupKeepsCarrierPolicyUntilTunRoutesAreRemoved(t *testing.T) 
 	t.Cleanup(func() { _ = policy.Close() })
 	tunInterface := &ownershipCheckingTun{events: &events}
 
-	if err := closeTunResources(nil, tunInterface, tunInterface, policy); err != nil {
+	if err := closeTunResources(nil, &closingProber{events: &events}, tunInterface, tunInterface, policy); err != nil {
 		t.Fatal(err)
 	}
 	if tunInterface.acquiredDuringClose {
 		t.Fatal("Outbound carrier policy ownership was released before startup cleanup removed TUN routes")
 	}
-	if got := strings.Join(events, ","); got != "tracker,tun" {
-		t.Fatalf("startup cleanup order = %s, want tracker,tun", got)
+	if got := strings.Join(events, ","); got != "prober,tracker,tun" {
+		t.Fatalf("startup cleanup order = %s, want prober,tracker,tun", got)
 	}
 
 	restarted, err := acquireOutboundCarrierPolicyWithBinder(nil, func(string, string, uintptr, *net.Interface) error { return nil })

@@ -18,4 +18,5 @@ message Config {
   bool auto_system_dns_to_gateway = 9;
   repeated string auto_system_wfp_block_leak = 10;
   repeated string auto_system_routing_table_exclude = 12;
+  bool enable_icmp_echo_forwarding = 11;
 }
