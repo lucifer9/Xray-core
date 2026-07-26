@@ -12,13 +12,13 @@ import (
 )
 
 func TestOutboundCarrierPolicyOwnershipLifecycle(t *testing.T) {
-	first, err := acquireOutboundCarrierPolicyWithBinder(func(string, string, uintptr, *net.Interface) error { return nil })
+	first, err := acquireOutboundCarrierPolicyWithBinder(nil, func(string, string, uintptr, *net.Interface) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = first.Close() })
 
-	if _, err := acquireOutboundCarrierPolicyWithBinder(func(string, string, uintptr, *net.Interface) error { return nil }); err == nil {
+	if _, err := acquireOutboundCarrierPolicyWithBinder(nil, func(string, string, uintptr, *net.Interface) error { return nil }); err == nil {
 		t.Fatal("second owner acquired Outbound carrier policy")
 	}
 	if err := first.Close(); err != nil {
@@ -28,7 +28,7 @@ func TestOutboundCarrierPolicyOwnershipLifecycle(t *testing.T) {
 		t.Fatalf("idempotent Close() error = %v", err)
 	}
 
-	restarted, err := acquireOutboundCarrierPolicyWithBinder(func(string, string, uintptr, *net.Interface) error { return nil })
+	restarted, err := acquireOutboundCarrierPolicyWithBinder(nil, func(string, string, uintptr, *net.Interface) error { return nil })
 	if err != nil {
 		t.Fatalf("restart acquisition error = %v", err)
 	}
@@ -59,7 +59,7 @@ func TestOutboundCarrierStartupFailureReleasesOwnership(t *testing.T) {
 	if _, _, err := startOutboundCarrierPolicy(tunInterface, &Config{AutoOutboundsInterface: "auto"}); err == nil {
 		t.Fatal("expected observer startup error")
 	}
-	policy, err := acquireOutboundCarrierPolicyWithBinder(func(string, string, uintptr, *net.Interface) error { return nil })
+	policy, err := acquireOutboundCarrierPolicyWithBinder(nil, func(string, string, uintptr, *net.Interface) error { return nil })
 	if err != nil {
 		t.Fatalf("ownership remained after failed startup: %v", err)
 	}
@@ -98,7 +98,7 @@ func (*orderingTun) newEndpoint() (stack.LinkEndpoint, error) { return nil, nil 
 func TestOutboundCarrierPolicyFamilyIsolationAndRecovery(t *testing.T) {
 	var mu sync.Mutex
 	var bound []string
-	policy, err := acquireOutboundCarrierPolicyWithBinder(func(network, _ string, _ uintptr, iface *net.Interface) error {
+	policy, err := acquireOutboundCarrierPolicyWithBinder(nil, func(network, _ string, _ uintptr, iface *net.Interface) error {
 		mu.Lock()
 		bound = append(bound, network+":"+iface.Name)
 		mu.Unlock()
@@ -134,31 +134,27 @@ func TestOutboundCarrierPolicyFamilyIsolationAndRecovery(t *testing.T) {
 	}
 }
 
-func TestOutboundCarrierPolicyExemptsLoopbackPerConnectionLeg(t *testing.T) {
+func TestOutboundCarrierPolicyExemptsLoopbackAndExcludedPrefixes(t *testing.T) {
 	calls := 0
-	policy, err := acquireOutboundCarrierPolicyWithBinder(func(string, string, uintptr, *net.Interface) error {
+	policy, err := acquireOutboundCarrierPolicyWithBinder([]string{"100.64.0.0/10", "fd7a:115c:a1e0::/48"}, func(string, string, uintptr, *net.Interface) error {
 		calls++
-		return errors.New("bind failed")
+		return errors.New("unexpected bind")
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = policy.Close() })
-	policy.update(carrierIPv4, &net.Interface{Name: "carrier4", Index: 4})
 
-	for _, address := range []string{"127.0.0.1:80", "localhost:53"} {
+	for _, address := range []string{"127.0.0.1:80", "localhost:53", "100.64.1.1:443", "[fd7a:115c:a1e0::1]:443"} {
 		if err := policy.controlConnectionLeg("tcp4", address, fakeRawConn{}); err != nil {
-			t.Fatalf("loopback destination %s error = %v", address, err)
+			t.Fatalf("exempt destination %s error = %v", address, err)
 		}
 	}
 	if calls != 0 {
 		t.Fatalf("binder calls = %d, want 0", calls)
 	}
 	if err := policy.controlConnectionLeg("tcp4", "203.0.113.1:443", fakeRawConn{}); err == nil {
-		t.Fatal("later external connection leg inherited loopback exemption")
-	}
-	if calls != 1 {
-		t.Fatalf("binder calls = %d, want 1", calls)
+		t.Fatal("later external connection leg inherited exemption")
 	}
 }
 

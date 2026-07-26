@@ -38,6 +38,7 @@ type WindowsTun struct {
 	carrierPolicy    *outboundCarrierPolicy
 	fixedCarrierName string
 	closed           bool
+	plannedRoutes    []netip.Prefix
 }
 
 // WindowsTun implements Tun
@@ -49,6 +50,10 @@ var _ GVisorDevice = (*WindowsTun)(nil)
 // NewTun creates a Wintun interface with the given name. Should a Wintun
 // interface with the same name exist, it tried to be reused.
 func NewTun(options *Config) (Tun, error) {
+	plan, err := PlanAutomaticSystemRoutes(options.AutoSystemRoutingTable, options.AutoSystemRoutingTableExclude, RouteCapacity{IPv4: maxAutomaticSystemRoutesPerFamily, IPv6: maxAutomaticSystemRoutesPerFamily})
+	if err != nil {
+		return nil, err
+	}
 	// instantiate wintun adapter
 	adapter, err := open(options.Name, options.Desc)
 	if err != nil {
@@ -63,11 +68,12 @@ func NewTun(options *Config) (Tun, error) {
 	}
 
 	tun := &WindowsTun{
-		options:  options,
-		adapter:  adapter,
-		session:  session,
-		readWait: session.ReadWaitEvent(),
-		luid:     winipcfg.LUID(adapter.LUID()),
+		options:       options,
+		adapter:       adapter,
+		session:       session,
+		readWait:      session.ReadWaitEvent(),
+		luid:          winipcfg.LUID(adapter.LUID()),
+		plannedRoutes: append(plan.IPv4, plan.IPv6...),
 	}
 
 	return tun, nil
@@ -86,23 +92,13 @@ func open(name, desc string) (*wintun.Adapter, error) {
 }
 
 func (t *WindowsTun) Start() error {
-	var has4, has6 bool
-	allowedIPs := make([]netip.Prefix, 0, len(t.options.AutoSystemRoutingTable))
-	for _, route := range t.options.AutoSystemRoutingTable {
-		allowedIPs = append(allowedIPs, netip.MustParsePrefix(route))
-	}
+	plannedRoutes, has4, has6 := buildWindowsAutomaticRoutes(t.plannedRoutes)
 	routesMap := make(map[winipcfg.RouteData]struct{})
-	for _, ip := range allowedIPs {
+	for _, planned := range plannedRoutes {
 		route := winipcfg.RouteData{
-			Destination: ip.Masked(),
+			Destination: planned.Destination,
+			NextHop:     planned.NextHop,
 			Metric:      0,
-		}
-		if ip.Addr().Is4() {
-			has4 = true
-			route.NextHop = netip.IPv4Unspecified()
-		} else {
-			has6 = true
-			route.NextHop = netip.IPv6Unspecified()
 		}
 		routesMap[route] = struct{}{}
 	}

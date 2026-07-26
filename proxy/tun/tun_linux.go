@@ -27,6 +27,7 @@ type LinuxTun struct {
 
 	interfaceAddresses []netlink.Addr
 	systemRoutes       []netlink.Route
+	plannedRoutes      []netip.Prefix
 	routeMonitorStop   chan struct{}
 	routeMonitorOnce   sync.Once
 	routeMonitorWait   sync.WaitGroup
@@ -39,17 +40,29 @@ type LinuxTun struct {
 // LinuxTun implements Tun
 var _ Tun = (*LinuxTun)(nil)
 
+var (
+	addLinuxRoute    = netlink.RouteAdd
+	deleteLinuxRoute = netlink.RouteDel
+)
+
 // NewTun builds new tun interface handler (linux specific)
 func NewTun(options *Config) (Tun, error) {
+	plan, err := PlanAutomaticSystemRoutes(options.AutoSystemRoutingTable, options.AutoSystemRoutingTableExclude, RouteCapacity{IPv4: maxAutomaticSystemRoutesPerFamily, IPv6: maxAutomaticSystemRoutesPerFamily})
+	if err != nil {
+		return nil, err
+	}
+	plannedRoutes := append(plan.IPv4, plan.IPv6...)
+
 	tunFd, tunLink, fdProvided, err := openFromEnv(options.Name)
 	if err != nil {
 		return nil, err
 	}
 	if fdProvided {
 		return &LinuxTun{
-			tunFd:   tunFd,
-			tunLink: tunLink,
-			options: options,
+			tunFd:         tunFd,
+			tunLink:       tunLink,
+			options:       options,
+			plannedRoutes: plannedRoutes,
 		}, nil
 	}
 
@@ -65,10 +78,11 @@ func NewTun(options *Config) (Tun, error) {
 	}
 
 	linuxTun := &LinuxTun{
-		tunFd:   tunFd,
-		tunLink: tunLink,
-		options: options,
-		ownsTun: true,
+		tunFd:         tunFd,
+		tunLink:       tunLink,
+		options:       options,
+		ownsTun:       true,
+		plannedRoutes: plannedRoutes,
 	}
 
 	return linuxTun, nil
@@ -261,25 +275,20 @@ func (t *LinuxTun) unsetInterfaceAddresses() error {
 }
 
 func (t *LinuxTun) setSystemRoutes() error {
-	if len(t.options.AutoSystemRoutingTable) == 0 {
+	if len(t.plannedRoutes) == 0 {
 		return nil
 	}
 	tunIndex := t.tunLink.Attrs().Index
-	for _, cidr := range t.options.AutoSystemRoutingTable {
-		prefix, err := netip.ParsePrefix(cidr)
-		if err != nil {
-			return errors.New("invalid system route ", cidr).Base(err)
-		}
-		prefix = prefix.Masked()
+	for _, prefix := range t.plannedRoutes {
 		_, ipNet, _ := net.ParseCIDR(prefix.String())
 		route := netlink.Route{
 			LinkIndex: tunIndex,
 			Dst:       ipNet,
 			Priority:  1,
 		}
-		if err := netlink.RouteAdd(&route); err != nil {
-			_ = t.unsetSystemRoutes()
-			return errors.New("failed to add system route ", cidr).Base(err)
+		if err := addLinuxRoute(&route); err != nil {
+			rollbackErr := t.unsetSystemRoutes()
+			return errors.Combine(errors.New("failed to add system route ", prefix).Base(err), rollbackErr)
 		}
 		t.systemRoutes = append(t.systemRoutes, route)
 	}
@@ -290,7 +299,7 @@ func (t *LinuxTun) unsetSystemRoutes() error {
 	var errs []error
 	for i := len(t.systemRoutes) - 1; i >= 0; i-- {
 		route := t.systemRoutes[i]
-		if err := netlink.RouteDel(&route); err != nil {
+		if err := deleteLinuxRoute(&route); err != nil {
 			errs = append(errs, errors.New("failed to delete system route").Base(err))
 		}
 	}

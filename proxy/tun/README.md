@@ -17,6 +17,7 @@ Plainly enabling it in the config probably will result nothing, or lock your rou
 By default, enabling the feature will only bring the tun interface up. \
 When configured explicitly, Windows and Linux can apply interface addresses from `gateway`, while macOS uses the first IPv4 prefix from `gateway` to configure the utun point-to-point address. \
 Windows, Linux and macOS can also apply system routes from `autoSystemRoutingTable`.
+`autoSystemRoutingTableExclude` subtracts CIDR prefixes from that route set. Xray does not install gateway or carrier-interface routes for excluded destinations; those prefixes remain entirely under operating-system route selection. Duplicate, overlapping, and non-canonical prefixes are normalized before installation, and invalid or excessively expanded plans fail before route mutation.
 Linux and macOS do not configure system DNS from the `dns` field; system DNS remains managed by the OS or distribution-specific network services. \
 For more advanced routing policies or rules, OS level configuration can still manage the named interface (e.g. xray0) when it appears.
 This keeps complex system level routing and rules in a single place of responsibility - the OS itself. \

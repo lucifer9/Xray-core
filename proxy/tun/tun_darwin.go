@@ -54,6 +54,7 @@ type DarwinTun struct {
 	carrierPolicy    *outboundCarrierPolicy
 	fixedCarrierName string
 	systemRoutes     []netip.Prefix
+	plannedRoutes    []netip.Prefix
 	gateway          netip.Prefix
 }
 
@@ -84,6 +85,11 @@ func NewTun(options *Config) (Tun, error) {
 		}, nil
 	}
 
+	plannedRoutes, err := buildDarwinSystemRoutes(options.AutoSystemRoutingTable, options.AutoSystemRoutingTableExclude)
+	if err != nil {
+		return nil, err
+	}
+
 	// macOS: create our own utun interface
 	tunFile, err := open(options.Name)
 	if err != nil {
@@ -103,11 +109,12 @@ func NewTun(options *Config) (Tun, error) {
 	}
 
 	return &DarwinTun{
-		tunFile: tunFile,
-		options: options,
-		tunFd:   int(tunFile.Fd()),
-		ownsFd:  true,
-		gateway: gateway,
+		tunFile:       tunFile,
+		options:       options,
+		tunFd:         int(tunFile.Fd()),
+		ownsFd:        true,
+		gateway:       gateway,
+		plannedRoutes: plannedRoutes,
 	}, nil
 }
 
@@ -584,11 +591,7 @@ func defaultRouteFamily(message *route.RouteMessage) (int, bool) {
 }
 
 func (t *DarwinTun) setSystemRoutes() error {
-	routes, err := buildDarwinSystemRoutes(t.options.AutoSystemRoutingTable)
-	if err != nil {
-		return err
-	}
-	if len(routes) == 0 {
+	if len(t.plannedRoutes) == 0 {
 		return nil
 	}
 
@@ -596,14 +599,29 @@ func (t *DarwinTun) setSystemRoutes() error {
 	if err != nil {
 		return err
 	}
-	for _, destination := range routes {
-		if err := execDarwinRoute(unix.RTM_ADD, tunIndex, destination, t.gateway); err != nil {
-			_ = t.unsetSystemRoutes()
-			return xerrors.New("failed to add system route ", destination).Base(err)
-		}
-		t.systemRoutes = append(t.systemRoutes, destination)
+	installed, err := applyDarwinSystemRoutes(tunIndex, t.plannedRoutes, t.gateway, execDarwinRoute)
+	if err != nil {
+		return err
 	}
+	t.systemRoutes = installed
 	return nil
+}
+
+func applyDarwinSystemRoutes(interfaceIndex int, routes []netip.Prefix, gateway netip.Prefix, execute func(int, int, netip.Prefix, netip.Prefix) error) ([]netip.Prefix, error) {
+	installed := make([]netip.Prefix, 0, len(routes))
+	for _, destination := range routes {
+		if err := execute(unix.RTM_ADD, interfaceIndex, destination, gateway); err != nil {
+			var rollbackErrors []error
+			for i := len(installed) - 1; i >= 0; i-- {
+				if rollbackErr := execute(unix.RTM_DELETE, interfaceIndex, installed[i], gateway); rollbackErr != nil && !errors.Is(rollbackErr, unix.ESRCH) {
+					rollbackErrors = append(rollbackErrors, xerrors.New("failed to roll back system route ", installed[i]).Base(rollbackErr))
+				}
+			}
+			return nil, xerrors.Combine(append([]error{xerrors.New("failed to add system route ", destination).Base(err)}, rollbackErrors...)...)
+		}
+		installed = append(installed, destination)
+	}
+	return installed, nil
 }
 
 func (t *DarwinTun) unsetSystemRoutes() error {
@@ -622,19 +640,8 @@ func (t *DarwinTun) unsetSystemRoutes() error {
 	return xerrors.Combine(errs...)
 }
 
-func buildDarwinSystemRoutes(configured []string) ([]netip.Prefix, error) {
-	routes := make([]netip.Prefix, 0, len(configured))
-	seen := make(map[netip.Prefix]struct{})
-
-	appendRoute := func(prefix netip.Prefix) {
-		prefix = prefix.Masked()
-		if _, found := seen[prefix]; found {
-			return
-		}
-		seen[prefix] = struct{}{}
-		routes = append(routes, prefix)
-	}
-
+func buildDarwinSystemRoutes(configured, excluded []string) ([]netip.Prefix, error) {
+	expanded := make([]string, 0, len(configured)+16)
 	for _, value := range configured {
 		prefix, err := netip.ParsePrefix(value)
 		if err != nil {
@@ -643,14 +650,17 @@ func buildDarwinSystemRoutes(configured []string) ([]netip.Prefix, error) {
 		prefix = prefix.Masked()
 		if prefix.Bits() == 0 {
 			for _, protected := range darwinProtectedDefaultRoutes(prefix.Addr().Is4()) {
-				appendRoute(protected)
+				expanded = append(expanded, protected.String())
 			}
 			continue
 		}
-		appendRoute(prefix)
+		expanded = append(expanded, prefix.String())
 	}
-
-	return routes, nil
+	plan, err := PlanAutomaticSystemRoutes(expanded, excluded, RouteCapacity{IPv4: maxAutomaticSystemRoutesPerFamily, IPv6: maxAutomaticSystemRoutesPerFamily})
+	if err != nil {
+		return nil, err
+	}
+	return append(plan.IPv4, plan.IPv6...), nil
 }
 
 func darwinProtectedDefaultRoutes(ipv4 bool) []netip.Prefix {
