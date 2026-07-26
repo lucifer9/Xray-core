@@ -40,6 +40,7 @@ type WindowsTun struct {
 	carrierPolicy    *outboundCarrierPolicy
 	fixedCarrierName string
 	closed           bool
+	plannedRoutes    []netip.Prefix
 }
 
 // WindowsTun implements Tun
@@ -51,6 +52,10 @@ var _ GVisorDevice = (*WindowsTun)(nil)
 // NewTun creates a Wintun interface with the given name. Should a Wintun
 // interface with the same name exist, it tried to be reused.
 func NewTun(options *Config) (Tun, error) {
+	plan, err := PlanAutomaticSystemRoutes(options.AutoSystemRoutingTable, options.AutoSystemRoutingTableExclude, RouteCapacity{IPv4: maxAutomaticSystemRoutesPerFamily, IPv6: maxAutomaticSystemRoutesPerFamily})
+	if err != nil {
+		return nil, err
+	}
 	// instantiate wintun adapter
 	adapter, err := open(options.Name, options.Desc)
 	if err != nil {
@@ -65,11 +70,12 @@ func NewTun(options *Config) (Tun, error) {
 	}
 
 	tun := &WindowsTun{
-		options:  options,
-		adapter:  adapter,
-		session:  session,
-		readWait: session.ReadWaitEvent(),
-		luid:     winipcfg.LUID(adapter.LUID()),
+		options:       options,
+		adapter:       adapter,
+		session:       session,
+		readWait:      session.ReadWaitEvent(),
+		luid:          winipcfg.LUID(adapter.LUID()),
+		plannedRoutes: append(plan.IPv4, plan.IPv6...),
 	}
 
 	return tun, nil
@@ -110,20 +116,13 @@ func (t *WindowsTun) Start() (err error) {
 		dns = append(dns, netip.MustParseAddr(ip))
 	}
 
-	var route4, route6 bool
+	plannedRoutes, route4, route6 := buildWindowsAutomaticRoutes(t.plannedRoutes)
 	routesMap := make(map[winipcfg.RouteData]struct{})
-	for _, cidr := range t.options.AutoSystemRoutingTable {
-		prefix := netip.MustParsePrefix(cidr)
+	for _, planned := range plannedRoutes {
 		route := winipcfg.RouteData{
-			Destination: prefix.Masked(),
+			Destination: planned.Destination,
+			NextHop:     planned.NextHop,
 			Metric:      0,
-		}
-		if prefix.Addr().Is4() {
-			route4 = true
-			route.NextHop = netip.IPv4Unspecified()
-		} else {
-			route6 = true
-			route.NextHop = netip.IPv6Unspecified()
 		}
 		routesMap[route] = struct{}{}
 	}
