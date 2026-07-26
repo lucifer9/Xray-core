@@ -235,6 +235,29 @@ func TestWaitKqueueReportsPersistentFailure(t *testing.T) {
 	}
 }
 
+func TestDarwinDirectEchoBindingUsesFamilySpecificOptions(t *testing.T) {
+	for _, test := range []struct {
+		family    echoFamily
+		wantLevel int
+		wantName  int
+	}{
+		{family: echoIPv4, wantLevel: unix.IPPROTO_IP, wantName: unix.IP_BOUND_IF},
+		{family: echoIPv6, wantLevel: unix.IPPROTO_IPV6, wantName: unix.IPV6_BOUND_IF},
+	} {
+		var gotLevel, gotName, gotIndex int
+		err := bindDarwinDirectEchoSocket(test.family, 42, carrierInterface{Name: "en0", Index: 7}, func(_ int, level, name, index int) error {
+			gotLevel, gotName, gotIndex = level, name, index
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotLevel != test.wantLevel || gotName != test.wantName || gotIndex != 7 {
+			t.Fatalf("family %d binding = level %d name %d index %d", test.family, gotLevel, gotName, gotIndex)
+		}
+	}
+}
+
 // TestSetinterfaceSocketFamilies binds each kind of socket Xray's dialers
 // open to lo0, including the dual-stack one Go opens for UDP.
 func TestSetinterfaceSocketFamilies(t *testing.T) {

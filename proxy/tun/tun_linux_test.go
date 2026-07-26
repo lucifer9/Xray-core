@@ -44,3 +44,18 @@ func TestLinuxSystemRouteRollbackDeletesOnlyInstalledRoutesInReverse(t *testing.
 		t.Fatalf("rollback order = %v", deleted)
 	}
 }
+
+func TestLinuxDirectEchoBindingUsesCarrierName(t *testing.T) {
+	var gotFD int
+	var gotName string
+	err := bindLinuxDirectEchoSocket(42, carrierInterface{Name: "eth-test", Index: 7}, func(fd int, name string) error {
+		gotFD, gotName = fd, name
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotFD != 42 || gotName != "eth-test" {
+		t.Fatalf("binding = fd %d name %q", gotFD, gotName)
+	}
+}

@@ -43,6 +43,14 @@ type StackOptions struct {
 	// has come a long way, so its checksums are looked at, nothing but that way limits the windows, and the
 	// segments of TCP carry the times of both sides if the other side has them
 	Remote bool
+	// EchoProber answers the echo requests of the system with what their destinations send back.
+	// Without it they are answered here
+	EchoProber echoProber
+	// Gateway4/Gateway6 are the TUN interface addresses used as the source of
+	// ICMP error messages the stack reports to clients (e.g. network
+	// unreachable when an Echo probe family has no Outbound carrier).
+	Gateway4 netip.Addr
+	Gateway6 netip.Addr
 }
 
 // flow is what the packets of one connection have in common, src is the side of the system
@@ -89,6 +97,11 @@ type stack struct {
 	// goes to the others
 	fragments      reassembly
 	identification [64]atomic.Uint32
+
+	echo               echoProber
+	gateway4, gateway6 netip.Addr
+	// echoes are the answers of echo that are being written, Close waits for them
+	echoes sync.WaitGroup
 }
 
 // NewStack builds new ip stack. Without a handler it takes no connections, only opens them
@@ -103,6 +116,9 @@ func NewStack(ctx context.Context, options StackOptions, handler ConnectionHandl
 		stamps:    options.Remote,
 		conns:     make(map[flow]*tcpConn),
 		sockets:   make(map[netip.AddrPort]*udpSocket),
+		echo:      options.EchoProber,
+		gateway4:  options.Gateway4,
+		gateway6:  options.Gateway6,
 	}
 	if t, ok := options.Tun.(segmenter); ok && t.Segments() {
 		s.segmenter = t
@@ -148,7 +164,12 @@ func (s *stack) Close() error {
 	for _, u := range sockets {
 		u.queue.close()
 	}
-	return nil
+	if s.echo == nil {
+		return nil
+	}
+	err := s.echo.Close()
+	s.echoes.Wait()
+	return err
 }
 
 // read takes the packets of the tun until it is closed
@@ -575,6 +596,10 @@ func (s *stack) handleICMP(p packet) {
 	}
 	if m[0] != request || m[1] != 0 || s.handle == nil && !slices.Contains(s.addresses, p.dst) {
 		// a stack that takes no connections is one host, not all of them
+		return
+	}
+	if s.echo != nil {
+		s.probeEcho(p)
 		return
 	}
 	var b [ipv6HeaderSize]byte
