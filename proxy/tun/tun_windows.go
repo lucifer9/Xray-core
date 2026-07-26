@@ -31,14 +31,15 @@ func procyield(cycles uint32)
 type WindowsTun struct {
 	sync.RWMutex
 
-	options  *Config
-	adapter  *wintun.Adapter
-	session  wintun.Session
-	readWait windows.Handle
-	luid     winipcfg.LUID
-	cbr      winipcfg.ChangeCallback
-	cbi      winipcfg.ChangeCallback
-	closed   bool
+	options          *Config
+	adapter          *wintun.Adapter
+	session          wintun.Session
+	readWait         windows.Handle
+	luid             winipcfg.LUID
+	changeCallbacks  []winipcfg.ChangeCallback
+	carrierPolicy    *outboundCarrierPolicy
+	fixedCarrierName string
+	closed           bool
 }
 
 // WindowsTun implements Tun
@@ -197,20 +198,6 @@ startOver:
 		}
 	}
 
-	if updater != nil {
-		t.cbr, err = winipcfg.RegisterRouteChangeCallback(func(notificationType winipcfg.MibNotificationType, route *winipcfg.MibIPforwardRow2) {
-			updater.Update()
-		})
-		if err != nil {
-			return err
-		}
-		t.cbi, err = winipcfg.RegisterInterfaceChangeCallback(func(notificationType winipcfg.MibNotificationType, iface *winipcfg.MibIPInterfaceRow) {
-			updater.Update()
-		})
-		if err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -222,12 +209,7 @@ func (t *WindowsTun) Close() error {
 	}
 	t.closed = true
 
-	if t.cbr != nil {
-		t.cbr.Unregister()
-	}
-	if t.cbi != nil {
-		t.cbi.Unregister()
-	}
+	_ = t.StopOutboundCarrierTracking()
 	if t.luid != 0 {
 		t.luid.FlushRoutes(windows.AF_INET)
 		t.luid.FlushIPAddresses(windows.AF_INET)
@@ -349,50 +331,92 @@ func setinterface(network, address string, fd uintptr, iface *net.Interface) err
 	return errors.Combine(err1, err2, err3, err4)
 }
 
-func findOutboundInterface(tunIndex int, fixedName string) (*net.Interface, error) {
+func validateOutboundCarrierBinding() error { return nil }
+
+func (t *WindowsTun) StartOutboundCarrierTracking(policy *outboundCarrierPolicy, fixedName string) error {
+	t.carrierPolicy = policy
+	t.fixedCarrierName = fixedName
+	refresh := func() {
+		index, err := t.Index()
+		if err == nil {
+			_ = policy.refresh(index, fixedName)
+		}
+	}
+	routeCallback, err := winipcfg.RegisterRouteChangeCallback(func(winipcfg.MibNotificationType, *winipcfg.MibIPforwardRow2) {
+		refresh()
+	})
+	if err != nil {
+		return err
+	}
+	t.changeCallbacks = append(t.changeCallbacks, routeCallback)
+	interfaceCallback, err := winipcfg.RegisterInterfaceChangeCallback(func(winipcfg.MibNotificationType, *winipcfg.MibIPInterfaceRow) {
+		refresh()
+	})
+	if err != nil {
+		_ = routeCallback.Unregister()
+		t.changeCallbacks = nil
+		return err
+	}
+	t.changeCallbacks = append(t.changeCallbacks, interfaceCallback)
+	index, err := t.Index()
+	if err != nil {
+		_ = t.StopOutboundCarrierTracking()
+		return err
+	}
+	if err := policy.refresh(index, fixedName); err != nil {
+		_ = t.StopOutboundCarrierTracking()
+		return err
+	}
+	return nil
+}
+
+func (t *WindowsTun) StopOutboundCarrierTracking() error {
+	var errs []error
+	for i := len(t.changeCallbacks) - 1; i >= 0; i-- {
+		if err := t.changeCallbacks[i].Unregister(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	t.changeCallbacks = nil
+	t.carrierPolicy = nil
+	return errors.Combine(errs...)
+}
+
+func findOutboundInterface(family carrierFamily, tunIndex int, fixedName string) (*net.Interface, error) {
 	if fixedName != "" {
-		return net.InterfaceByName(fixedName)
+		iface, err := net.InterfaceByName(fixedName)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateFixedCarrierInterface(iface, tunIndex); err != nil {
+			return nil, err
+		}
+		return iface, nil
 	}
 
-	r, err := winipcfg.GetIPForwardTable2(windows.AF_UNSPEC)
+	windowsFamily := winipcfg.AddressFamily(windows.AF_INET6)
+	if family == carrierIPv4 {
+		windowsFamily = windows.AF_INET
+	}
+	routes, err := winipcfg.GetIPForwardTable2(windowsFamily)
 	if err != nil {
 		return nil, err
 	}
-	lowestMetric := ^uint32(0)
-	index := uint32(0)
-	lowestMetricWifi := ^uint32(0)
-	indexWifi := uint32(0)
-	for i := range r {
-		if r[i].DestinationPrefix.PrefixLength != 0 || r[i].InterfaceIndex == uint32(tunIndex) {
+	candidates := make([]windowsRouteCandidate, 0, len(routes))
+	for _, route := range routes {
+		prefix := route.DestinationPrefix.Prefix()
+		if !prefix.IsValid() || prefix.Bits() != 0 || route.InterfaceIndex == 0 || int(route.InterfaceIndex) == tunIndex || route.Loopback {
 			continue
 		}
-		ifrow, err := r[i].InterfaceLUID.Interface()
-		if err != nil || ifrow.OperStatus != winipcfg.IfOperStatusUp {
-			continue
-		}
-
-		iface, err := r[i].InterfaceLUID.IPInterface(windows.AF_INET)
+		iface, err := net.InterfaceByIndex(int(route.InterfaceIndex))
 		if err != nil {
-			iface, err = r[i].InterfaceLUID.IPInterface(windows.AF_INET6)
-			if err != nil {
-				continue
-			}
-		}
-
-		if ifrow.Type == windows.IF_TYPE_IEEE80211 {
-			if r[i].Metric+iface.Metric < lowestMetricWifi {
-				lowestMetricWifi = r[i].Metric + iface.Metric
-				indexWifi = r[i].InterfaceIndex
-			}
 			continue
 		}
-		if r[i].Metric+iface.Metric < lowestMetric {
-			lowestMetric = r[i].Metric + iface.Metric
-			index = r[i].InterfaceIndex
+		ipif, err := route.InterfaceLUID.IPInterface(windowsFamily)
+		if err != nil {
+			continue
 		}
+		candidates = append(candidates, windowsRouteCandidate{Interface: *iface, RouteMetric: route.Metric, InterfaceMetric: ipif.Metric})
 	}
-	if indexWifi != 0 {
-		index = indexWifi
-	}
-	return net.InterfaceByIndex(int(index))
+	return selectWindowsDefaultRoute(candidates)
 }

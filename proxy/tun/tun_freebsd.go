@@ -39,10 +39,12 @@ const (
 func procyield(cycles uint32)
 
 type FreeBSDTun struct {
-	device        tun.Device
-	options       *Config
-	tunIndex      int
-	autoInterface bool
+	device           tun.Device
+	options          *Config
+	tunIndex         int
+	carrierPolicy    *outboundCarrierPolicy
+	fixedCarrierName string
+	routeMonitorWait sync.WaitGroup
 
 	systemRoutes     []netip.Prefix
 	escapeMu         sync.Mutex
@@ -106,10 +108,9 @@ func NewTun(options *Config) (Tun, error) {
 	}
 
 	return &FreeBSDTun{
-		device:        tunDev,
-		options:       options,
-		tunIndex:      iface.Index,
-		autoInterface: options.AutoOutboundsInterface != "",
+		device:   tunDev,
+		options:  options,
+		tunIndex: iface.Index,
 	}, nil
 }
 
@@ -155,33 +156,53 @@ func nextLocalIPv4(gateway netip.Prefix) (netip.Addr, bool) {
 }
 
 func (t *FreeBSDTun) Start() error {
-	if err := t.setSystemRoutes(); err != nil {
+	return t.setSystemRoutes()
+}
+
+func validateOutboundCarrierBinding() error { return checkEscapeFib() }
+
+func (t *FreeBSDTun) StartOutboundCarrierTracking(policy *outboundCarrierPolicy, fixedName string) error {
+	t.carrierPolicy = policy
+	t.fixedCarrierName = fixedName
+	// Open the observer before the first snapshot so route changes cannot be lost.
+	fd, err := unix.Socket(unix.AF_ROUTE, unix.SOCK_RAW, 0)
+	if err != nil {
 		return err
 	}
-
-	// Gate on this instance's own option, not the package-global updater,
-	// which a previously-removed inbound may have left set. checkEscapeFib
-	// already ran in NewTun, before the dialer controller was registered.
-	if t.autoInterface {
-		if err := t.syncEscapeFib(); err != nil {
-			_ = t.unsetSystemRoutes()
-			return err
-		}
-		fd, err := unix.Socket(unix.AF_ROUTE, unix.SOCK_RAW, 0)
-		if err != nil {
-			t.unsetEscapeFib()
-			_ = t.unsetSystemRoutes()
-			return err
-		}
-		t.routeMonitor = os.NewFile(uintptr(fd), "xray-route-monitor")
-		go t.monitorRouteChanges()
+	// A pollable descriptor lets Close interrupt Read before waiting for the monitor.
+	if err := unix.SetNonblock(fd, true); err != nil {
+		_ = unix.Close(fd)
+		return err
 	}
+	t.routeMonitor = os.NewFile(uintptr(fd), "xray-route-monitor")
+	if err := t.syncEscapeFib(); err != nil {
+		_ = t.StopOutboundCarrierTracking()
+		return err
+	}
+	t.routeMonitorWait.Add(1)
+	go t.monitorRouteChanges()
+	return nil
+}
+
+func (t *FreeBSDTun) StopOutboundCarrierTracking() error {
+	t.routeMonitorOnce.Do(func() {
+		if t.routeMonitor != nil {
+			_ = t.routeMonitor.Close()
+		}
+	})
+	t.routeMonitorWait.Wait()
+	if t.carrierPolicy != nil {
+		t.carrierPolicy.update(carrierIPv4, nil)
+		t.carrierPolicy.update(carrierIPv6, nil)
+	}
+	t.unsetEscapeFib()
 	return nil
 }
 
 // monitorRouteChanges refreshes the outbound interface and the escape FIB
 // mirror whenever the system routing table changes.
 func (t *FreeBSDTun) monitorRouteChanges() {
+	defer t.routeMonitorWait.Done()
 	buffer := make([]byte, 64*1024)
 	for {
 		if _, err := t.routeMonitor.Read(buffer); err != nil {
@@ -190,9 +211,6 @@ func (t *FreeBSDTun) monitorRouteChanges() {
 			}
 			return
 		}
-		if updater != nil {
-			updater.Update()
-		}
 		if err := t.syncEscapeFib(); err != nil {
 			xerrors.LogInfoInner(context.Background(), err, "[tun] failed to refresh escape routes")
 		}
@@ -200,12 +218,7 @@ func (t *FreeBSDTun) monitorRouteChanges() {
 }
 
 func (t *FreeBSDTun) Close() error {
-	t.routeMonitorOnce.Do(func() {
-		if t.routeMonitor != nil {
-			_ = t.routeMonitor.Close()
-		}
-	})
-	t.unsetEscapeFib()
+	_ = t.StopOutboundCarrierTracking()
 	routeErr := t.unsetSystemRoutes()
 	name, nameErr := t.Name()
 	closeErr := t.device.Close()
@@ -457,8 +470,8 @@ func prefixMask6(bits int) [16]byte {
 
 // setinterface is the per-socket half of autoOutboundsInterface. FreeBSD has
 // no SO_BINDTODEVICE/IP_BOUND_IF equivalent, so the socket is pointed at the
-// escape FIB instead, where Start() mirrors the physical default route; the
-// iface argument is resolved by the shared updater but unused here (the escape
+// escape FIB instead, where carrier tracking mirrors the physical default route; the
+// iface argument is resolved by the carrier policy but unused here (the escape
 // is table-based, not a per-socket interface bind). checkEscapeFib in NewTun
 // guarantees the FIB exists before this can run.
 func setinterface(network, address string, fd uintptr, iface *net.Interface) error {
@@ -605,14 +618,14 @@ func execRoute(fib int, messageType int, interfaceIndex int, destination netip.P
 	return err
 }
 
-func findOutboundInterface(tunIndex int, fixedName string) (*net.Interface, error) {
+func findOutboundInterface(family carrierFamily, tunIndex int, fixedName string) (*net.Interface, error) {
 	if fixedName != "" {
 		iface, err := net.InterfaceByName(fixedName)
 		if err != nil {
 			return nil, err
 		}
-		if iface.Index == tunIndex {
-			return nil, errors.New("outbound interface cannot be the TUN interface")
+		if err := validateFixedCarrierInterface(iface, tunIndex); err != nil {
+			return nil, err
 		}
 		return iface, nil
 	}
@@ -621,14 +634,12 @@ func findOutboundInterface(tunIndex int, fixedName string) (*net.Interface, erro
 	if err != nil {
 		return nil, err
 	}
-	for _, family := range []int{unix.AF_INET, unix.AF_INET6} {
-		for _, route := range physical {
-			if route.family == family {
-				return route.iface, nil
-			}
+	for _, route := range physical {
+		if route.family == unix.AF_INET && family == carrierIPv4 || route.family == unix.AF_INET6 && family == carrierIPv6 {
+			return route.iface, nil
 		}
 	}
-	return nil, errors.New("default route not found")
+	return nil, errNoOutboundCarrier
 }
 
 // physicalRoute describes one physical default route: the interface it
@@ -772,17 +783,33 @@ func checkEscapeFib() error {
 
 // syncEscapeFib mirrors the physical default routes (and the connected
 // prefixes their gateways resolve through) into the escape FIB, replacing
-// whatever mirror a previous call installed. On discovery failure the old
-// mirror is kept, since a stale escape route beats none during a transient
-// route flap.
-func (t *FreeBSDTun) syncEscapeFib() error {
-	var onlyIndex int
-	if t.options.AutoOutboundsInterface != "" && updater != nil {
-		if iface := updater.Get(); iface != nil {
-			onlyIndex = iface.Index
+// whatever mirror a previous call installed. Publish carriers only after the
+// mirror is installed; any failure blocks new governed connection legs.
+func (t *FreeBSDTun) syncEscapeFib() (err error) {
+	var physical []physicalRoute
+	defer func() {
+		var ipv4, ipv6 *net.Interface
+		if err == nil {
+			for _, route := range physical {
+				if route.family == unix.AF_INET {
+					ipv4 = route.iface
+				} else if route.family == unix.AF_INET6 {
+					ipv6 = route.iface
+				}
+			}
 		}
+		t.carrierPolicy.update(carrierIPv4, ipv4)
+		t.carrierPolicy.update(carrierIPv6, ipv6)
+	}()
+	var onlyIndex int
+	if t.fixedCarrierName != "" {
+		iface, lookupErr := findOutboundInterface(carrierIPv4, t.tunIndex, t.fixedCarrierName)
+		if lookupErr != nil {
+			return lookupErr
+		}
+		onlyIndex = iface.Index
 	}
-	physical, err := physicalDefaultRoutes(t.tunIndex, onlyIndex)
+	physical, err = physicalDefaultRoutes(t.tunIndex, onlyIndex)
 	if err != nil {
 		return err
 	}

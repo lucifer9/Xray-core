@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	xnet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/transport"
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
 type testCounter struct {
@@ -130,4 +132,102 @@ func TestHandlerCountsTunConnectionTraffic(t *testing.T) {
 	if got := conn.writer.String(); got != "downlink" {
 		t.Fatalf("connection write mismatch: got %q, want %q", got, "downlink")
 	}
+}
+
+type closingStack struct {
+	events *[]string
+}
+
+func (*closingStack) Start() error { return nil }
+
+func (s *closingStack) Close() error {
+	*s.events = append(*s.events, "stack")
+	return nil
+}
+
+type ownershipCheckingTun struct {
+	events              *[]string
+	acquiredDuringClose bool
+}
+
+func (*ownershipCheckingTun) Start() error { return nil }
+
+func (t *ownershipCheckingTun) Close() error {
+	*t.events = append(*t.events, "tun")
+	policy, err := acquireOutboundCarrierPolicyWithBinder(func(string, string, uintptr, *net.Interface) error { return nil })
+	if err == nil {
+		t.acquiredDuringClose = true
+		_ = policy.Close()
+	}
+	return nil
+}
+
+func (*ownershipCheckingTun) Name() (string, error)                    { return "tun", nil }
+func (*ownershipCheckingTun) Index() (int, error)                      { return 99, nil }
+func (*ownershipCheckingTun) newEndpoint() (stack.LinkEndpoint, error) { return nil, nil }
+func (*ownershipCheckingTun) StartOutboundCarrierTracking(*outboundCarrierPolicy, string) error {
+	return nil
+}
+
+func (t *ownershipCheckingTun) StopOutboundCarrierTracking() error {
+	*t.events = append(*t.events, "tracker")
+	return nil
+}
+
+func TestHandlerCloseKeepsCarrierPolicyUntilTunRoutesAreRemoved(t *testing.T) {
+	events := make([]string, 0, 3)
+	policy, err := acquireOutboundCarrierPolicyWithBinder(func(string, string, uintptr, *net.Interface) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = policy.Close() })
+	tunInterface := &ownershipCheckingTun{events: &events}
+	handler := &Handler{
+		stack:          &closingStack{events: &events},
+		tun:            tunInterface,
+		carrierPolicy:  policy,
+		carrierTracker: tunInterface,
+	}
+
+	if err := handler.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if tunInterface.acquiredDuringClose {
+		t.Fatal("Outbound carrier policy ownership was released before TUN routes were removed")
+	}
+	if got := strings.Join(events, ","); got != "stack,tracker,tun" {
+		t.Fatalf("close order = %s, want stack,tracker,tun", got)
+	}
+
+	restarted, err := acquireOutboundCarrierPolicyWithBinder(func(string, string, uintptr, *net.Interface) error { return nil })
+	if err != nil {
+		t.Fatalf("Outbound carrier policy ownership remained after Handler.Close(): %v", err)
+	}
+	_ = restarted.Close()
+}
+
+func TestStartupCleanupKeepsCarrierPolicyUntilTunRoutesAreRemoved(t *testing.T) {
+	events := make([]string, 0, 2)
+	policy, err := acquireOutboundCarrierPolicyWithBinder(func(string, string, uintptr, *net.Interface) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = policy.Close() })
+	tunInterface := &ownershipCheckingTun{events: &events}
+
+	if err := closeTunResources(nil, tunInterface, tunInterface, policy); err != nil {
+		t.Fatal(err)
+	}
+	if tunInterface.acquiredDuringClose {
+		t.Fatal("Outbound carrier policy ownership was released before startup cleanup removed TUN routes")
+	}
+	if got := strings.Join(events, ","); got != "tracker,tun" {
+		t.Fatalf("startup cleanup order = %s, want tracker,tun", got)
+	}
+
+	restarted, err := acquireOutboundCarrierPolicyWithBinder(func(string, string, uintptr, *net.Interface) error { return nil })
+	if err != nil {
+		t.Fatalf("Outbound carrier policy ownership remained after startup cleanup: %v", err)
+	}
+	_ = restarted.Close()
 }
