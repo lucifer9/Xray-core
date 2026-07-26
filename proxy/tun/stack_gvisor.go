@@ -2,6 +2,8 @@ package tun
 
 import (
 	"context"
+	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/xtls/xray-core/common/errors"
@@ -12,7 +14,6 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/checksum"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
-	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/icmp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
@@ -34,12 +35,28 @@ const (
 
 // stackGVisor is ip stack implemented by gVisor package
 type stackGVisor struct {
-	ctx         context.Context
-	tun         Tun
-	idleTimeout time.Duration
-	handler     *Handler
-	stack       *stack.Stack
-	endpoint    stack.LinkEndpoint
+	ctx            context.Context
+	tun            Tun
+	idleTimeout    time.Duration
+	handler        *Handler
+	stack          *stack.Stack
+	endpoint       stack.LinkEndpoint
+	echoProber     echoProber
+	completionMu   sync.Mutex
+	completionWait sync.WaitGroup
+	closed         bool
+	closeOnce      sync.Once
+	closeErr       error
+	gateway4       netip.Addr
+	gateway6       netip.Addr
+	rawICMPWriter  func(tcpip.NetworkProtocolNumber, []byte, tcpip.Address, tcpip.Address, uint8) error
+}
+
+func (t *stackGVisor) emitRawICMPPacket(netProto tcpip.NetworkProtocolNumber, message []byte, srcIP, dstIP tcpip.Address, ttl uint8) error {
+	if t.rawICMPWriter != nil {
+		return t.rawICMPWriter(netProto, message, srcIP, dstIP, ttl)
+	}
+	return t.writeRawICMPPacket(netProto, message, srcIP, dstIP, ttl)
 }
 
 // NewStack builds new ip stack (using gVisor)
@@ -49,6 +66,9 @@ func NewStack(ctx context.Context, options StackOptions, handler *Handler) (Stac
 		tun:         options.Tun,
 		idleTimeout: options.IdleTimeout,
 		handler:     handler,
+		echoProber:  options.EchoProber,
+		gateway4:    options.Gateway4,
+		gateway6:    options.Gateway6,
 	}
 
 	return gStack, nil
@@ -56,12 +76,15 @@ func NewStack(ctx context.Context, options StackOptions, handler *Handler) (Stac
 
 // Start is called by Handler to bring stack to life
 func (t *stackGVisor) Start() error {
+	if t.echoProber == nil {
+		return errors.New("Echo prober is not configured")
+	}
 	linkEndpoint, err := t.tun.newEndpoint()
 	if err != nil {
 		return err
 	}
 
-	ipStack, err := createStack(linkEndpoint)
+	ipStack, err := createStack(linkEndpoint, t.interceptIPv6EchoRequest)
 	if err != nil {
 		return err
 	}
@@ -192,22 +215,39 @@ func (t *stackGVisor) writeRawUDPPacket(payload []byte, src net.Destination, dst
 
 // Close is called by Handler to shut down the stack
 func (t *stackGVisor) Close() error {
-	if t.stack == nil {
-		return nil
-	}
-	t.endpoint.Attach(nil)
-	t.stack.Close()
-	for _, endpoint := range t.stack.CleanupEndpoints() {
-		endpoint.Abort()
-	}
+	t.closeOnce.Do(func() {
+		t.completionMu.Lock()
+		t.closed = true
+		t.completionMu.Unlock()
+		if t.echoProber != nil {
+			t.closeErr = t.echoProber.Close()
+		}
+		t.completionWait.Wait()
+		if t.stack != nil {
+			t.endpoint.Attach(nil)
+			t.stack.Close()
+			for _, endpoint := range t.stack.CleanupEndpoints() {
+				endpoint.Abort()
+			}
+		}
+	})
+	return t.closeErr
+}
 
-	return nil
+func (t *stackGVisor) beginEchoCompletion() bool {
+	t.completionMu.Lock()
+	defer t.completionMu.Unlock()
+	if t.closed {
+		return false
+	}
+	t.completionWait.Add(1)
+	return true
 }
 
 // createStack configure gVisor ip stack
-func createStack(ep stack.LinkEndpoint) (*stack.Stack, error) {
+func createStack(ep stack.LinkEndpoint, interceptIPv6Echo func(*stack.PacketBuffer) bool) (*stack.Stack, error) {
 	opts := stack.Options{
-		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
+		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, newIPv6EchoProtocolFactory(interceptIPv6Echo)},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
 		HandleLocal:        false,
 	}

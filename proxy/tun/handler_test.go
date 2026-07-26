@@ -78,62 +78,6 @@ type testDispatcher struct {
 	readBytes    int32
 }
 
-func (d *testDispatcher) Type() interface{} {
-	return routing.DispatcherType()
-}
-
-func (d *testDispatcher) Start() error {
-	return nil
-}
-
-func (d *testDispatcher) Close() error {
-	return nil
-}
-
-func (d *testDispatcher) Dispatch(context.Context, xnet.Destination) (*transport.Link, error) {
-	return nil, nil
-}
-
-func (d *testDispatcher) DispatchLink(ctx context.Context, dest xnet.Destination, link *transport.Link) error {
-	mb, err := link.Reader.ReadMultiBuffer()
-	if err != nil {
-		return err
-	}
-	atomic.StoreInt32(&d.readBytes, mb.Len())
-	buf.ReleaseMulti(mb)
-
-	return link.Writer.WriteMultiBuffer(buf.MultiBuffer{buf.FromBytes(d.writePayload)})
-}
-
-func TestHandlerCountsTunConnectionTraffic(t *testing.T) {
-	uplinkCounter := new(testCounter)
-	downlinkCounter := new(testCounter)
-	dispatcher := &testDispatcher{writePayload: []byte("downlink")}
-	conn := newTestConn([]byte("uplink"))
-
-	handler := &Handler{
-		ctx:             context.Background(),
-		config:          &Config{},
-		dispatcher:      dispatcher,
-		uplinkCounter:   uplinkCounter,
-		downlinkCounter: downlinkCounter,
-	}
-	handler.HandleConnection(conn, xnet.TCPDestination(xnet.LocalHostIP, 443))
-
-	if got := uplinkCounter.Value(); got != int64(len("uplink")) {
-		t.Fatalf("unexpected uplink counter: got %d, want %d", got, len("uplink"))
-	}
-	if got := downlinkCounter.Value(); got != int64(len("downlink")) {
-		t.Fatalf("unexpected downlink counter: got %d, want %d", got, len("downlink"))
-	}
-	if got := int(atomic.LoadInt32(&dispatcher.readBytes)); got != len("uplink") {
-		t.Fatalf("dispatcher read unexpected bytes: got %d, want %d", got, len("uplink"))
-	}
-	if got := conn.writer.String(); got != "downlink" {
-		t.Fatalf("connection write mismatch: got %q, want %q", got, "downlink")
-	}
-}
-
 type closingStack struct {
 	events *[]string
 }
@@ -142,6 +86,17 @@ func (*closingStack) Start() error { return nil }
 
 func (s *closingStack) Close() error {
 	*s.events = append(*s.events, "stack")
+	return nil
+}
+
+type closingProber struct {
+	events *[]string
+}
+
+func (*closingProber) Probe(echoRequest, func(echoResult)) error { return nil }
+
+func (p *closingProber) Close() error {
+	*p.events = append(*p.events, "prober")
 	return nil
 }
 
@@ -207,7 +162,7 @@ func TestHandlerCloseKeepsCarrierPolicyUntilTunRoutesAreRemoved(t *testing.T) {
 }
 
 func TestStartupCleanupKeepsCarrierPolicyUntilTunRoutesAreRemoved(t *testing.T) {
-	events := make([]string, 0, 2)
+	events := make([]string, 0, 3)
 	policy, err := acquireOutboundCarrierPolicyWithBinder(nil, func(string, string, uintptr, *net.Interface) error { return nil })
 	if err != nil {
 		t.Fatal(err)
@@ -215,14 +170,14 @@ func TestStartupCleanupKeepsCarrierPolicyUntilTunRoutesAreRemoved(t *testing.T) 
 	t.Cleanup(func() { _ = policy.Close() })
 	tunInterface := &ownershipCheckingTun{events: &events}
 
-	if err := closeTunResources(nil, tunInterface, tunInterface, policy); err != nil {
+	if err := closeTunResources(nil, &closingProber{events: &events}, tunInterface, tunInterface, policy); err != nil {
 		t.Fatal(err)
 	}
 	if tunInterface.acquiredDuringClose {
 		t.Fatal("Outbound carrier policy ownership was released before startup cleanup removed TUN routes")
 	}
-	if got := strings.Join(events, ","); got != "tracker,tun" {
-		t.Fatalf("startup cleanup order = %s, want tracker,tun", got)
+	if got := strings.Join(events, ","); got != "prober,tracker,tun" {
+		t.Fatalf("startup cleanup order = %s, want prober,tracker,tun", got)
 	}
 
 	restarted, err := acquireOutboundCarrierPolicyWithBinder(nil, func(string, string, uintptr, *net.Interface) error { return nil })
@@ -230,4 +185,60 @@ func TestStartupCleanupKeepsCarrierPolicyUntilTunRoutesAreRemoved(t *testing.T) 
 		t.Fatalf("Outbound carrier policy ownership remained after startup cleanup: %v", err)
 	}
 	_ = restarted.Close()
+}
+
+func (d *testDispatcher) Type() interface{} {
+	return routing.DispatcherType()
+}
+
+func (d *testDispatcher) Start() error {
+	return nil
+}
+
+func (d *testDispatcher) Close() error {
+	return nil
+}
+
+func (d *testDispatcher) Dispatch(context.Context, xnet.Destination) (*transport.Link, error) {
+	return nil, nil
+}
+
+func (d *testDispatcher) DispatchLink(ctx context.Context, dest xnet.Destination, link *transport.Link) error {
+	mb, err := link.Reader.ReadMultiBuffer()
+	if err != nil {
+		return err
+	}
+	atomic.StoreInt32(&d.readBytes, mb.Len())
+	buf.ReleaseMulti(mb)
+
+	return link.Writer.WriteMultiBuffer(buf.MultiBuffer{buf.FromBytes(d.writePayload)})
+}
+
+func TestHandlerCountsTunConnectionTraffic(t *testing.T) {
+	uplinkCounter := new(testCounter)
+	downlinkCounter := new(testCounter)
+	dispatcher := &testDispatcher{writePayload: []byte("downlink")}
+	conn := newTestConn([]byte("uplink"))
+
+	handler := &Handler{
+		ctx:             context.Background(),
+		config:          &Config{},
+		dispatcher:      dispatcher,
+		uplinkCounter:   uplinkCounter,
+		downlinkCounter: downlinkCounter,
+	}
+	handler.HandleConnection(conn, xnet.TCPDestination(xnet.LocalHostIP, 443))
+
+	if got := uplinkCounter.Value(); got != int64(len("uplink")) {
+		t.Fatalf("unexpected uplink counter: got %d, want %d", got, len("uplink"))
+	}
+	if got := downlinkCounter.Value(); got != int64(len("downlink")) {
+		t.Fatalf("unexpected downlink counter: got %d, want %d", got, len("downlink"))
+	}
+	if got := int(atomic.LoadInt32(&dispatcher.readBytes)); got != len("uplink") {
+		t.Fatalf("dispatcher read unexpected bytes: got %d, want %d", got, len("uplink"))
+	}
+	if got := conn.writer.String(); got != "downlink" {
+		t.Fatalf("connection write mismatch: got %q, want %q", got, "downlink")
+	}
 }

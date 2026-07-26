@@ -26,6 +26,7 @@ type TunConfig struct {
 	AutoOutboundsInterface        *string  `json:"autoOutboundsInterface"`
 	AutoSystemDnsToGateway        bool     `json:"autoSystemDnsToGateway"`
 	AutoSystemWfpBlockLeak        []string `json:"autoSystemWfpBlockLeak"`
+	EnableIcmpEchoForwarding      bool     `json:"enableIcmpEchoForwarding"`
 	AutoSystemRoutingTableExclude []string `json:"autoSystemRoutingTableExclude"`
 }
 
@@ -42,6 +43,7 @@ func (v *TunConfig) Build() (proto.Message, error) {
 		DNS:                           v.DNS,
 		UserLevel:                     v.UserLevel,
 		AutoSystemRoutingTable:        v.AutoSystemRoutingTable,
+		EnableIcmpEchoForwarding:      v.EnableIcmpEchoForwarding,
 		AutoSystemDnsToGateway:        v.AutoSystemDnsToGateway,
 	}
 	for _, leak := range v.AutoSystemWfpBlockLeak {
@@ -72,7 +74,7 @@ func (v *TunConfig) Build() (proto.Message, error) {
 	if v.AutoOutboundsInterface != nil {
 		config.AutoOutboundsInterface = *v.AutoOutboundsInterface
 	}
-	if len(v.AutoSystemRoutingTable) > 0 && v.AutoOutboundsInterface == nil {
+	if (len(v.AutoSystemRoutingTable) > 0 || v.EnableIcmpEchoForwarding) && v.AutoOutboundsInterface == nil {
 		config.AutoOutboundsInterface = "auto"
 	}
 
