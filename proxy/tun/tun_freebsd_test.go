@@ -4,11 +4,19 @@ package tun
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
 )
+
+func TestFreeBSDRejectsInvalidExclusionsBeforeCreatingTun(t *testing.T) {
+	_, err := NewTun(&Config{AutoSystemRoutingTableExclude: []string{"invalid"}})
+	if err == nil || !strings.Contains(err.Error(), "Excluded route prefix") {
+		t.Fatalf("expected exclusion validation before any interface mutation, got %v", err)
+	}
+}
 
 func TestSelectFreeBSDGatewayDefault(t *testing.T) {
 	gateway, local, err := selectFreeBSDGateway(nil)
