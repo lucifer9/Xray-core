@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"runtime"
 	"strconv"
 	"sync"
 	"unsafe"
@@ -49,6 +50,9 @@ type DarwinTun struct {
 
 	routeMonitor     *os.File
 	routeMonitorOnce sync.Once
+	routeMonitorWait sync.WaitGroup
+	carrierPolicy    *outboundCarrierPolicy
+	fixedCarrierName string
 	systemRoutes     []netip.Prefix
 	gateway          netip.Prefix
 }
@@ -116,24 +120,11 @@ func (t *DarwinTun) Start() error {
 		return err
 	}
 
-	if updater != nil {
-		fd, err := unix.Socket(unix.AF_ROUTE, unix.SOCK_RAW, 0)
-		if err != nil {
-			_ = t.unsetSystemRoutes()
-			return err
-		}
-		t.routeMonitor = os.NewFile(uintptr(fd), "xray-route-monitor")
-		go t.monitorRouteChanges()
-	}
 	return nil
 }
 
 func (t *DarwinTun) Close() error {
-	t.routeMonitorOnce.Do(func() {
-		if t.routeMonitor != nil {
-			_ = t.routeMonitor.Close()
-		}
-	})
+	_ = t.StopOutboundCarrierTracking()
 	routeErr := t.unsetSystemRoutes()
 	if t.ownsFd {
 		return xerrors.Combine(routeErr, t.tunFile.Close())
@@ -143,6 +134,7 @@ func (t *DarwinTun) Close() error {
 }
 
 func (t *DarwinTun) monitorRouteChanges() {
+	defer t.routeMonitorWait.Done()
 	buffer := make([]byte, 64*1024)
 	for {
 		if _, err := t.routeMonitor.Read(buffer); err != nil {
@@ -151,8 +143,11 @@ func (t *DarwinTun) monitorRouteChanges() {
 			}
 			return
 		}
-		if updater != nil {
-			updater.Update()
+		if t.carrierPolicy != nil {
+			index, err := t.Index()
+			if err == nil {
+				_ = t.carrierPolicy.refresh(index, t.fixedCarrierName)
+			}
 		}
 	}
 }
@@ -463,29 +458,62 @@ func ioctlPtr(fd int, req uint, arg unsafe.Pointer) error {
 }
 
 func setinterface(network, address string, fd uintptr, iface *net.Interface) error {
-	var err1, err2 error
-
 	switch network {
 	case "tcp6", "udp6", "ip6":
-		err1 = unix.SetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF, iface.Index)
-		fallthrough
+		return unix.SetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF, iface.Index)
 	case "tcp4", "udp4", "ip4":
-		err2 = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_BOUND_IF, iface.Index)
+		return unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_BOUND_IF, iface.Index)
 	default:
 		panic(network + " " + address)
 	}
-
-	return errors.Join(err1, err2)
 }
 
-func findOutboundInterface(tunIndex int, fixedName string) (*net.Interface, error) {
+func validateOutboundCarrierBinding() error { return nil }
+
+func (t *DarwinTun) StartOutboundCarrierTracking(policy *outboundCarrierPolicy, fixedName string) error {
+	if runtime.GOOS == "ios" && fixedName == "" {
+		return xerrors.New("automatic Outbound carrier interface tracking is not supported on iOS")
+	}
+	fd, err := unix.Socket(unix.AF_ROUTE, unix.SOCK_RAW, 0)
+	if err != nil {
+		return xerrors.New("failed to open route monitor").Base(err)
+	}
+	t.routeMonitor = os.NewFile(uintptr(fd), "xray-route-monitor")
+	t.carrierPolicy = policy
+	t.fixedCarrierName = fixedName
+	index, err := t.Index()
+	if err != nil {
+		_ = t.routeMonitor.Close()
+		return err
+	}
+	if err := policy.refresh(index, fixedName); err != nil {
+		_ = t.routeMonitor.Close()
+		return err
+	}
+	t.routeMonitorWait.Add(1)
+	go t.monitorRouteChanges()
+	return nil
+}
+
+func (t *DarwinTun) StopOutboundCarrierTracking() error {
+	t.routeMonitorOnce.Do(func() {
+		if t.routeMonitor != nil {
+			_ = t.routeMonitor.Close()
+		}
+	})
+	t.routeMonitorWait.Wait()
+	t.carrierPolicy = nil
+	return nil
+}
+
+func findOutboundInterface(family carrierFamily, tunIndex int, fixedName string) (*net.Interface, error) {
 	if fixedName != "" {
 		iface, err := net.InterfaceByName(fixedName)
 		if err != nil {
 			return nil, err
 		}
-		if iface.Index == tunIndex {
-			return nil, errors.New("outbound interface cannot be the TUN interface")
+		if err := validateFixedCarrierInterface(iface, tunIndex); err != nil {
+			return nil, err
 		}
 		return iface, nil
 	}
@@ -498,8 +526,13 @@ func findOutboundInterface(tunIndex int, fixedName string) (*net.Interface, erro
 	if err != nil {
 		return nil, err
 	}
+	return selectDarwinDefaultRoute(messages, family, tunIndex, net.InterfaceByIndex)
+}
 
-	var ipv6Index int
+func selectDarwinDefaultRoute(messages []route.Message, family carrierFamily, tunIndex int, interfaceByIndex func(int) (*net.Interface, error)) (*net.Interface, error) {
+	// Darwin's routing socket returns the RIB in kernel route-preference order.
+	// x/net/route exposes no route metric beyond path MTU, so the first usable
+	// default route for the requested family is the operating-system choice.
 	for _, message := range messages {
 		routeMessage, ok := message.(*route.RouteMessage)
 		if !ok || routeMessage.Index == tunIndex {
@@ -509,22 +542,20 @@ func findOutboundInterface(tunIndex int, fixedName string) (*net.Interface, erro
 			continue
 		}
 
-		family, ok := defaultRouteFamily(routeMessage)
+		routeFamily, ok := defaultRouteFamily(routeMessage)
 		if !ok {
 			continue
 		}
-		if family == unix.AF_INET {
-			return usableDarwinInterface(routeMessage.Index)
-		}
-		if family == unix.AF_INET6 && ipv6Index == 0 {
-			ipv6Index = routeMessage.Index
+		if (routeFamily == unix.AF_INET && family == carrierIPv4) ||
+			(routeFamily == unix.AF_INET6 && family == carrierIPv6) {
+			iface, err := interfaceByIndex(routeMessage.Index)
+			if err != nil || iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			return iface, nil
 		}
 	}
-
-	if ipv6Index != 0 {
-		return usableDarwinInterface(ipv6Index)
-	}
-	return nil, errors.New("default route not found")
+	return nil, errNoOutboundCarrier
 }
 
 func defaultRouteFamily(message *route.RouteMessage) (int, bool) {
@@ -550,17 +581,6 @@ func defaultRouteFamily(message *route.RouteMessage) (int, bool) {
 	default:
 		return 0, false
 	}
-}
-
-func usableDarwinInterface(index int) (*net.Interface, error) {
-	iface, err := net.InterfaceByIndex(index)
-	if err != nil {
-		return nil, err
-	}
-	if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
-		return nil, errors.New("default route interface is not usable")
-	}
-	return iface, nil
 }
 
 func (t *DarwinTun) setSystemRoutes() error {

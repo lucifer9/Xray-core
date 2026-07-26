@@ -2,9 +2,7 @@ package tun
 
 import (
 	"context"
-	"net/netip"
-	"strings"
-	"syscall"
+	"sync"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
@@ -19,7 +17,6 @@ import (
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/features/stats"
 	"github.com/xtls/xray-core/transport"
-	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/stat"
 )
 
@@ -35,6 +32,10 @@ type Handler struct {
 	sniffingRequest session.SniffingRequest
 	uplinkCounter   stats.Counter
 	downlinkCounter stats.Counter
+	carrierPolicy   *outboundCarrierPolicy
+	carrierTracker  outboundCarrierTracker
+	closeOnce       sync.Once
+	closeErr        error
 }
 
 // ConnectionHandler interface with the only method that stack is going to push new connections to
@@ -89,35 +90,18 @@ func (t *Handler) Start() error {
 		return err
 	}
 
+	var policy *outboundCarrierPolicy
+	var tracker outboundCarrierTracker
 	if t.config.AutoOutboundsInterface != "" {
-		tunIndex, err := tunInterface.Index()
+		policy, tracker, err = startOutboundCarrierPolicy(tunInterface, t.config)
 		if err != nil {
-			_ = tunInterface.Close()
-			return err
+			return errors.Combine(err, tunInterface.Close())
 		}
-		if t.config.AutoOutboundsInterface == "auto" {
-			t.config.AutoOutboundsInterface = ""
-		}
-		updater = &InterfaceUpdater{tunIndex: tunIndex, fixedName: t.config.AutoOutboundsInterface}
-		updater.Update()
-		internet.RegisterDialerController(func(network, address string, c syscall.RawConn) error {
-			iface := updater.Get()
-			if iface == nil {
-				errors.LogInfo(context.Background(), "[tun] falied to set interface > iface == nil")
-				return nil
-			}
-			return c.Control(func(fd uintptr) {
-				addrPort, _ := netip.ParseAddrPort(address)
-				// skip loopback
-				if addrPort.Addr().IsLoopback() || strings.HasPrefix(strings.ToLower(address), "localhost:") {
-					return
-				}
-				err := setinterface(network, address, fd, iface)
-				if err != nil {
-					errors.LogInfoInner(context.Background(), err, "[tun] falied to set interface")
-				}
-			})
-		})
+	}
+
+	var tunStack Stack
+	cleanup := func() error {
+		return closeTunResources(tunStack, tracker, tunInterface, policy)
 	}
 
 	errors.LogInfo(t.ctx, tunName, " created")
@@ -126,31 +110,42 @@ func (t *Handler) Start() error {
 		Tun:         tunInterface,
 		IdleTimeout: t.policyManager.ForLevel(t.config.UserLevel).Timeouts.ConnectionIdle,
 	}
-	tunStack, err := NewStack(t.ctx, tunStackOptions, t)
+	tunStack, err = NewStack(t.ctx, tunStackOptions, t)
 	if err != nil {
-		_ = tunInterface.Close()
-		return err
+		return errors.Combine(err, cleanup())
 	}
 
 	err = tunStack.Start()
 	if err != nil {
-		_ = tunStack.Close()
-		_ = tunInterface.Close()
-		return err
+		return errors.Combine(err, cleanup())
 	}
 
 	err = tunInterface.Start()
 	if err != nil {
-		_ = tunStack.Close()
-		_ = tunInterface.Close()
-		return err
+		return errors.Combine(err, cleanup())
 	}
 
 	t.stack = tunStack
 	t.tun = tunInterface
+	t.carrierPolicy = policy
+	t.carrierTracker = tracker
 
 	errors.LogInfo(t.ctx, tunName, " up")
 	return nil
+}
+
+func closeTunResources(tunStack Stack, tracker outboundCarrierTracker, tunInterface Tun, policy *outboundCarrierPolicy) error {
+	var stackErr error
+	if tunStack != nil {
+		stackErr = tunStack.Close()
+	}
+	var trackerErr error
+	if tracker != nil {
+		trackerErr = tracker.StopOutboundCarrierTracking()
+	}
+	tunErr := common.CloseIfExists(tunInterface)
+	policyErr := common.CloseIfExists(policy)
+	return errors.Combine(stackErr, trackerErr, tunErr, policyErr)
 }
 
 // HandleConnection pass the connection coming from the ip stack to the routing dispatcher
@@ -214,7 +209,10 @@ func (t *Handler) HandleConnection(conn net.Conn, destination net.Destination) {
 
 // Close implements common.Closable.
 func (t *Handler) Close() error {
-	return errors.Combine(common.CloseIfExists(t.stack), common.CloseIfExists(t.tun))
+	t.closeOnce.Do(func() {
+		t.closeErr = closeTunResources(t.stack, t.carrierTracker, t.tun, t.carrierPolicy)
+	})
+	return t.closeErr
 }
 
 // Network implements proxy.Inbound

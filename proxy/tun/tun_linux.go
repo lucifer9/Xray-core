@@ -3,7 +3,6 @@
 package tun
 
 import (
-	"context"
 	"net"
 	"net/netip"
 	"strconv"
@@ -30,6 +29,11 @@ type LinuxTun struct {
 	systemRoutes       []netlink.Route
 	routeMonitorStop   chan struct{}
 	routeMonitorOnce   sync.Once
+	routeMonitorWait   sync.WaitGroup
+	carrierPolicy      *outboundCarrierPolicy
+	fixedCarrierName   string
+	routeUpdates       chan netlink.RouteUpdate
+	linkUpdates        chan netlink.LinkUpdate
 }
 
 // LinuxTun implements Tun
@@ -184,21 +188,12 @@ func (t *LinuxTun) Start() error {
 		return err
 	}
 
-	if updater != nil {
-		t.routeMonitorStop = make(chan struct{})
-		go t.monitorRouteChanges()
-	}
-
 	return nil
 }
 
 // Close is called to shut down the tun interface
 func (t *LinuxTun) Close() error {
-	t.routeMonitorOnce.Do(func() {
-		if t.routeMonitorStop != nil {
-			close(t.routeMonitorStop)
-		}
-	})
+	_ = t.StopOutboundCarrierTracking()
 
 	_ = t.unsetSystemRoutes()
 	_ = t.unsetInterfaceAddresses()
@@ -231,6 +226,8 @@ func (t *LinuxTun) newEndpoint() (stack.LinkEndpoint, error) {
 func setinterface(network, address string, fd uintptr, iface *net.Interface) error {
 	return unix.BindToDevice(int(fd), iface.Name)
 }
+
+func validateOutboundCarrierBinding() error { return nil }
 
 func (t *LinuxTun) setInterfaceAddresses() error {
 	if len(t.options.Gateway) == 0 {
@@ -302,33 +299,23 @@ func (t *LinuxTun) unsetSystemRoutes() error {
 }
 
 func (t *LinuxTun) monitorRouteChanges() {
-	routeCh := make(chan netlink.RouteUpdate)
-	if err := netlink.RouteSubscribe(routeCh, t.routeMonitorStop); err != nil {
-		errors.LogInfoInner(context.Background(), err, "[tun] failed to subscribe route changes")
-		return
-	}
-
-	linkCh := make(chan netlink.LinkUpdate)
-	if err := netlink.LinkSubscribe(linkCh, t.routeMonitorStop); err != nil {
-		errors.LogInfoInner(context.Background(), err, "[tun] failed to subscribe link changes")
-		return
-	}
+	defer t.routeMonitorWait.Done()
 
 	for {
 		select {
-		case _, ok := <-routeCh:
+		case _, ok := <-t.routeUpdates:
 			if !ok {
 				return
 			}
-			if updater != nil {
-				updater.Update()
+			if t.carrierPolicy != nil {
+				_ = t.carrierPolicy.refresh(t.tunLink.Attrs().Index, t.fixedCarrierName)
 			}
-		case _, ok := <-linkCh:
+		case _, ok := <-t.linkUpdates:
 			if !ok {
 				return
 			}
-			if updater != nil {
-				updater.Update()
+			if t.carrierPolicy != nil {
+				_ = t.carrierPolicy.refresh(t.tunLink.Attrs().Index, t.fixedCarrierName)
 			}
 		case <-t.routeMonitorStop:
 			return
@@ -336,29 +323,61 @@ func (t *LinuxTun) monitorRouteChanges() {
 	}
 }
 
-func findOutboundInterface(tunIndex int, fixedName string) (*net.Interface, error) {
+func (t *LinuxTun) StartOutboundCarrierTracking(policy *outboundCarrierPolicy, fixedName string) error {
+	t.carrierPolicy = policy
+	t.fixedCarrierName = fixedName
+	t.routeMonitorStop = make(chan struct{})
+
+	t.routeUpdates = make(chan netlink.RouteUpdate)
+	if err := netlink.RouteSubscribe(t.routeUpdates, t.routeMonitorStop); err != nil {
+		close(t.routeMonitorStop)
+		t.routeMonitorStop = nil
+		return errors.New("failed to subscribe route changes").Base(err)
+	}
+	t.linkUpdates = make(chan netlink.LinkUpdate)
+	if err := netlink.LinkSubscribe(t.linkUpdates, t.routeMonitorStop); err != nil {
+		close(t.routeMonitorStop)
+		t.routeMonitorStop = nil
+		return errors.New("failed to subscribe link changes").Base(err)
+	}
+	if err := policy.refresh(t.tunLink.Attrs().Index, fixedName); err != nil {
+		close(t.routeMonitorStop)
+		t.routeMonitorStop = nil
+		return err
+	}
+	t.routeMonitorWait.Add(1)
+	go t.monitorRouteChanges()
+	return nil
+}
+
+func (t *LinuxTun) StopOutboundCarrierTracking() error {
+	t.routeMonitorOnce.Do(func() {
+		if t.routeMonitorStop != nil {
+			close(t.routeMonitorStop)
+		}
+	})
+	t.routeMonitorWait.Wait()
+	t.carrierPolicy = nil
+	return nil
+}
+
+func findOutboundInterface(family carrierFamily, tunIndex int, fixedName string) (*net.Interface, error) {
 	if fixedName != "" {
 		iface, err := net.InterfaceByName(fixedName)
 		if err != nil {
 			return nil, err
 		}
-		if iface.Index == tunIndex {
-			return nil, errors.New("outbound interface cannot be the TUN interface")
+		if err := validateFixedCarrierInterface(iface, tunIndex); err != nil {
+			return nil, err
 		}
 		return iface, nil
 	}
 
-	for _, family := range []int{
-		netlink.FAMILY_V4,
-		netlink.FAMILY_V6,
-	} {
-		iface, err := findDefaultInterface(family, tunIndex)
-		if err == nil {
-			return iface, nil
-		}
+	netlinkFamily := netlink.FAMILY_V6
+	if family == carrierIPv4 {
+		netlinkFamily = netlink.FAMILY_V4
 	}
-
-	return nil, errors.New("no usable outbound interface found")
+	return findDefaultInterface(netlinkFamily, tunIndex)
 }
 
 func findDefaultInterface(family int, tunIndex int) (*net.Interface, error) {
@@ -371,6 +390,9 @@ func findDefaultInterface(family int, tunIndex int) (*net.Interface, error) {
 	selectedMetric := -1
 
 	for _, route := range routes {
+		if route.Type != 0 && route.Type != unix.RTN_UNICAST {
+			continue
+		}
 		if route.Dst != nil {
 			ones, _ := route.Dst.Mask.Size()
 			if ones != 0 {
@@ -399,7 +421,7 @@ func findDefaultInterface(family int, tunIndex int) (*net.Interface, error) {
 	}
 
 	if selected == nil {
-		return nil, errors.New("physical default route not found")
+		return nil, errNoOutboundCarrier
 	}
 
 	return selected, nil

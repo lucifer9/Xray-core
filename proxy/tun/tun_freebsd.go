@@ -145,10 +145,14 @@ func (t *FreeBSDTun) newEndpoint() (stack.LinkEndpoint, error) {
 }
 
 func setinterface(network, address string, fd uintptr, iface *net.Interface) error {
-	return nil
+	return errors.New("Outbound carrier interface binding is not supported on FreeBSD")
 }
 
-func findOutboundInterface(tunIndex int, fixedName string) (*net.Interface, error) {
+func validateOutboundCarrierBinding() error {
+	return errors.New("Outbound carrier interface binding is not supported on FreeBSD")
+}
+
+func findOutboundInterface(_ carrierFamily, tunIndex int, fixedName string) (*net.Interface, error) {
 	if fixedName == "" {
 		return nil, errors.New("automatic outbound interface selection is not supported on this platform")
 	}
@@ -156,8 +160,8 @@ func findOutboundInterface(tunIndex int, fixedName string) (*net.Interface, erro
 	if err != nil {
 		return nil, err
 	}
-	if iface.Index == tunIndex {
-		return nil, errors.New("outbound interface cannot be the TUN interface")
+	if err := validateFixedCarrierInterface(iface, tunIndex); err != nil {
+		return nil, err
 	}
 	return iface, nil
 }
