@@ -15,5 +15,6 @@ message Config {
   repeated string auto_system_routing_table = 6;
   string auto_outbounds_interface = 7;
   string desc = 8;
+  bool enable_icmp_echo_forwarding = 9;
   repeated string auto_system_routing_table_exclude = 10;
 }

@@ -49,10 +49,16 @@ It is ignored on other platforms.
 - TCP and UDP
 - ICMP Echo (ping)
 
+ICMP Echo uses an immediate **Local Echo reply** by default. Setting `enableIcmpEchoForwarding` to `true` selects **Direct Echo probes** on Linux and macOS: Xray sends host-originated ICMPv4/ICMPv6 Echo requests directly through the applicable Outbound carrier interface and returns a TUN reply only after a matching real reply arrives. This measures the host's direct network path, not a configured proxy outbound.
+
+Direct Echo requires raw-socket privileges (`CAP_NET_RAW` or root on Linux, and permission to open raw ICMP sockets on macOS). Both IPv4 and IPv6 resources and carrier bindings are validated during startup. Missing privileges, unsupported sockets, or binding failure abort startup. A family without an Outbound carrier (for example an IPv4-only host) degrades instead: probes for that family report an ICMP network unreachable error, like a router without a route, until a carrier appears. Windows, Android, iOS, FreeBSD, and other platforms reject this setting instead of falling back to Local Echo.
+Direct Echo destinations inside an `autoSystemRoutingTableExclude` prefix use a separate shared socket left to operating-system path selection rather than the Outbound carrier binding.
+
 ## LIMITATION
 
 - Only ICMP Echo request/reply is supported; other ICMP message types are ignored
-- ICMP Echo replies are generated locally by the TUN stack; they do not validate real remote ICMP reachability
+- Unless `enableIcmpEchoForwarding` is enabled, ICMP Echo replies are generated locally by the TUN stack and do not validate real remote reachability
+- Direct Echo produces no synthetic reply on timeout, unreachable response, overload, send failure, malformed traffic, or shutdown; losing or lacking an Outbound carrier reports an ICMP network unreachable error to the TUN client
 - Connections are established to any host, as connection success is only a mark of successful accepting packet for proxying. Hosts that are not accepting connections or don't even exists, will look like they opened a connection (SYN-ACK), and never send back a single byte, closing connection (RST) after some time. This is the side effect of the whole process actually being a proxy, and not real network layer 3 vpn
 
 ## CONSIDERATIONS

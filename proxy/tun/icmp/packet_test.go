@@ -172,3 +172,77 @@ func checksumPayloadV4(payload []byte) uint16 {
 func checksumPayloadV6(payload []byte) uint16 {
 	return checksum.Checksum(payload, 0)
 }
+
+func TestBuildDestinationUnreachable(t *testing.T) {
+	client := tcpip.AddrFrom4([4]byte{10, 0, 0, 2})
+	target := tcpip.AddrFrom4([4]byte{198, 51, 100, 1})
+	gateway := tcpip.AddrFrom4([4]byte{172, 18, 0, 1})
+
+	t.Run("ipv4", func(t *testing.T) {
+		echo := []byte{byte(header.ICMPv4Echo), 0, 0, 0, 0x12, 0x34, 0x56, 0x78, 0xaa}
+		message, err := BuildDestinationUnreachable(header.IPv4ProtocolNumber, echo, client, target, gateway, client)
+		if err != nil {
+			t.Fatal(err)
+		}
+		icmpHeader := header.ICMPv4(message)
+		if icmpHeader.Type() != header.ICMPv4DstUnreachable || icmpHeader.Code() != header.ICMPv4NetUnreachable {
+			t.Fatalf("type/code = %v/%v", icmpHeader.Type(), icmpHeader.Code())
+		}
+		if icmpHeader.Checksum() == 0 {
+			t.Fatal("checksum was not computed")
+		}
+		quote := icmpHeader.Payload()
+		ipHeader := header.IPv4(quote)
+		if !ipHeader.IsValid(len(quote)) || ipHeader.SourceAddress() != client || ipHeader.DestinationAddress() != target || ipHeader.TotalLength() != uint16(header.IPv4MinimumSize+len(echo)) {
+			t.Fatalf("quoted IPv4 header = %x", quote)
+		}
+		if string(quote[header.IPv4MinimumSize:]) != string(echo) {
+			t.Fatalf("quoted message = %x, want %x", quote[header.IPv4MinimumSize:], echo)
+		}
+	})
+
+	t.Run("ipv6", func(t *testing.T) {
+		client6 := tcpip.AddrFrom16([16]byte{0: 0x20, 1: 0x01, 2: 0x0d, 3: 0xb8, 15: 2})
+		target6 := tcpip.AddrFrom16([16]byte{0: 0x20, 1: 0x01, 2: 0x0d, 3: 0xb8, 15: 1})
+		gateway6 := tcpip.AddrFrom16([16]byte{0: 0xfd, 1: 0xfe, 15: 1})
+		echo := []byte{byte(header.ICMPv6EchoRequest), 0, 0, 0, 0x12, 0x34, 0x56, 0x78, 0xaa}
+		message, err := BuildDestinationUnreachable(header.IPv6ProtocolNumber, echo, client6, target6, gateway6, client6)
+		if err != nil {
+			t.Fatal(err)
+		}
+		icmpHeader := header.ICMPv6(message)
+		if icmpHeader.Type() != header.ICMPv6DstUnreachable || icmpHeader.Code() != header.ICMPv6NetworkUnreachable {
+			t.Fatalf("type/code = %v/%v", icmpHeader.Type(), icmpHeader.Code())
+		}
+		wantChecksum := header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
+			Header:      icmpHeader[:header.ICMPv6MinimumSize],
+			Src:         gateway6,
+			Dst:         client6,
+			PayloadCsum: checksum.Checksum(icmpHeader.Payload(), 0),
+			PayloadLen:  len(icmpHeader.Payload()),
+		})
+		if icmpHeader.Checksum() != wantChecksum {
+			t.Fatalf("checksum = %x, want %x", icmpHeader.Checksum(), wantChecksum)
+		}
+		quote := icmpHeader.Payload()
+		ipHeader := header.IPv6(quote)
+		if ipHeader.SourceAddress() != client6 || ipHeader.DestinationAddress() != target6 || ipHeader.PayloadLength() != uint16(len(echo)) {
+			t.Fatalf("quoted IPv6 header = %x", quote)
+		}
+	})
+
+	t.Run("quote truncation", func(t *testing.T) {
+		big := make([]byte, 65535-header.IPv4MinimumSize)
+		message, err := BuildDestinationUnreachable(header.IPv4ProtocolNumber, big, client, target, gateway, client)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(message) > 576-header.IPv4MinimumSize {
+			t.Fatalf("message length = %d, exceeds minimum reassembly buffer", len(message))
+		}
+		quoted := header.IPv4(header.ICMPv4(message).Payload())
+		if quoted.TotalLength() != 65535 {
+			t.Fatalf("quoted TotalLength = %d, want original 65535", quoted.TotalLength())
+		}
+	})
+}
