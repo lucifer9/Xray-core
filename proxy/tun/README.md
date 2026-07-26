@@ -18,6 +18,7 @@ By default, enabling the feature will only bring the tun interface up. \
 When configured explicitly, Windows and Linux can apply interface addresses from `gateway`, while macOS and FreeBSD use the first IPv4 prefix from `gateway` for the point-to-point address. \
 Without `gateway`, the systems differ: Xray assigns no address on Linux, Windows gives the interface link-local addresses itself (an IPv6 one at once, an IPv4 one from `169.254.0.0/16` after a few seconds), and macOS and FreeBSD use `169.254.10.1/30`. \
 Windows, Linux and macOS can also apply system routes from `autoSystemRoutingTable`.
+`autoSystemRoutingTableExclude` subtracts CIDR prefixes from that route set. Xray does not install gateway or carrier-interface routes for excluded destinations; those prefixes remain entirely under operating-system route selection. Duplicate, overlapping, and non-canonical prefixes are normalized before installation, and invalid or excessively expanded plans fail before route mutation.
 macOS does not configure system DNS from the `dns` field, and neither does Linux by default; system DNS remains managed by the OS or distribution-specific network services. \
 For more advanced routing policies or rules, OS level configuration can still manage the named interface (e.g. xray0) when it appears.
 This keeps complex system level routing and rules in a single place of responsibility - the OS itself. \

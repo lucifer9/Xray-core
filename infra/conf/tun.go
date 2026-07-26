@@ -16,28 +16,33 @@ import (
 )
 
 type TunConfig struct {
-	Name                   string   `json:"name"`
-	Desc                   string   `json:"desc"`
-	MTU                    uint32   `json:"mtu"`
-	Gateway                []string `json:"gateway"`
-	DNS                    []string `json:"dns"`
-	UserLevel              uint32   `json:"userLevel"`
-	AutoSystemRoutingTable []string `json:"autoSystemRoutingTable"`
-	AutoOutboundsInterface *string  `json:"autoOutboundsInterface"`
-	AutoSystemDnsToGateway bool     `json:"autoSystemDnsToGateway"`
-	AutoSystemWfpBlockLeak []string `json:"autoSystemWfpBlockLeak"`
+	Name                          string   `json:"name"`
+	Desc                          string   `json:"desc"`
+	MTU                           uint32   `json:"mtu"`
+	Gateway                       []string `json:"gateway"`
+	DNS                           []string `json:"dns"`
+	UserLevel                     uint32   `json:"userLevel"`
+	AutoSystemRoutingTable        []string `json:"autoSystemRoutingTable"`
+	AutoOutboundsInterface        *string  `json:"autoOutboundsInterface"`
+	AutoSystemDnsToGateway        bool     `json:"autoSystemDnsToGateway"`
+	AutoSystemWfpBlockLeak        []string `json:"autoSystemWfpBlockLeak"`
+	AutoSystemRoutingTableExclude []string `json:"autoSystemRoutingTableExclude"`
 }
 
 func (v *TunConfig) Build() (proto.Message, error) {
+	if _, err := tun.PlanAutomaticSystemRoutes(v.AutoSystemRoutingTable, v.AutoSystemRoutingTableExclude, tun.RouteCapacity{}); err != nil {
+		return nil, err
+	}
 	config := &tun.Config{
-		Name:                   v.Name,
-		Desc:                   v.Desc,
-		MTU:                    v.MTU,
-		Gateway:                v.Gateway,
-		DNS:                    v.DNS,
-		UserLevel:              v.UserLevel,
-		AutoSystemRoutingTable: v.AutoSystemRoutingTable,
-		AutoSystemDnsToGateway: v.AutoSystemDnsToGateway,
+		AutoSystemRoutingTableExclude: v.AutoSystemRoutingTableExclude,
+		Name:                          v.Name,
+		Desc:                          v.Desc,
+		MTU:                           v.MTU,
+		Gateway:                       v.Gateway,
+		DNS:                           v.DNS,
+		UserLevel:                     v.UserLevel,
+		AutoSystemRoutingTable:        v.AutoSystemRoutingTable,
+		AutoSystemDnsToGateway:        v.AutoSystemDnsToGateway,
 	}
 	for _, leak := range v.AutoSystemWfpBlockLeak {
 		switch leak := strings.ToLower(leak); leak {

@@ -154,7 +154,7 @@ func (*ownershipCheckingTun) Start() error { return nil }
 
 func (t *ownershipCheckingTun) Close() error {
 	*t.events = append(*t.events, "tun")
-	policy, err := acquireOutboundCarrierPolicyWithBinder(func(string, string, uintptr, *net.Interface) error { return nil })
+	policy, err := acquireOutboundCarrierPolicyWithBinder(nil, func(string, string, uintptr, *net.Interface) error { return nil })
 	if err == nil {
 		t.acquiredDuringClose = true
 		_ = policy.Close()
@@ -176,7 +176,7 @@ func (t *ownershipCheckingTun) StopOutboundCarrierTracking() error {
 
 func TestHandlerCloseKeepsCarrierPolicyUntilTunRoutesAreRemoved(t *testing.T) {
 	events := make([]string, 0, 3)
-	policy, err := acquireOutboundCarrierPolicyWithBinder(func(string, string, uintptr, *net.Interface) error { return nil })
+	policy, err := acquireOutboundCarrierPolicyWithBinder(nil, func(string, string, uintptr, *net.Interface) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestHandlerCloseKeepsCarrierPolicyUntilTunRoutesAreRemoved(t *testing.T) {
 		t.Fatalf("close order = %s, want stack,tracker,tun", got)
 	}
 
-	restarted, err := acquireOutboundCarrierPolicyWithBinder(func(string, string, uintptr, *net.Interface) error { return nil })
+	restarted, err := acquireOutboundCarrierPolicyWithBinder(nil, func(string, string, uintptr, *net.Interface) error { return nil })
 	if err != nil {
 		t.Fatalf("Outbound carrier policy ownership remained after Handler.Close(): %v", err)
 	}
@@ -208,7 +208,7 @@ func TestHandlerCloseKeepsCarrierPolicyUntilTunRoutesAreRemoved(t *testing.T) {
 
 func TestStartupCleanupKeepsCarrierPolicyUntilTunRoutesAreRemoved(t *testing.T) {
 	events := make([]string, 0, 2)
-	policy, err := acquireOutboundCarrierPolicyWithBinder(func(string, string, uintptr, *net.Interface) error { return nil })
+	policy, err := acquireOutboundCarrierPolicyWithBinder(nil, func(string, string, uintptr, *net.Interface) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestStartupCleanupKeepsCarrierPolicyUntilTunRoutesAreRemoved(t *testing.T) 
 		t.Fatalf("startup cleanup order = %s, want tracker,tun", got)
 	}
 
-	restarted, err := acquireOutboundCarrierPolicyWithBinder(func(string, string, uintptr, *net.Interface) error { return nil })
+	restarted, err := acquireOutboundCarrierPolicyWithBinder(nil, func(string, string, uintptr, *net.Interface) error { return nil })
 	if err != nil {
 		t.Fatalf("Outbound carrier policy ownership remained after startup cleanup: %v", err)
 	}
