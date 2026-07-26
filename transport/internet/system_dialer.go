@@ -2,6 +2,7 @@ package internet
 
 import (
 	"context"
+	"io"
 	"sync"
 	"syscall"
 	"time"
@@ -15,8 +16,74 @@ import (
 var (
 	Controllers           []func(network, address string, c syscall.RawConn) error
 	ControllersLock       sync.Mutex
+	requiredControllers   []requiredDialerController
+	nextControllerID      uint64
 	effectiveSystemDialer SystemDialer = &DefaultSystemDialer{}
 )
+
+type requiredDialerController struct {
+	id         uint64
+	controller func(network, address string, c syscall.RawConn) error
+}
+
+type dialerControllerSnapshot struct {
+	legacy   []func(network, address string, c syscall.RawConn) error
+	required []requiredDialerController
+}
+
+func snapshotDialerControllers() dialerControllerSnapshot {
+	ControllersLock.Lock()
+	defer ControllersLock.Unlock()
+
+	return dialerControllerSnapshot{
+		legacy:   append([]func(network, address string, c syscall.RawConn) error(nil), Controllers...),
+		required: append([]requiredDialerController(nil), requiredControllers...),
+	}
+}
+
+// HasDialerControllers reports whether the default system dialer has any
+// legacy or required controllers registered.
+func HasDialerControllers() bool {
+	ControllersLock.Lock()
+	defer ControllersLock.Unlock()
+	return len(Controllers) > 0 || len(requiredControllers) > 0
+}
+
+func (s dialerControllerSnapshot) control(ctx context.Context, network, address string, c syscall.RawConn) error {
+	for _, controller := range s.legacy {
+		if err := controller(network, address, c); err != nil {
+			errors.LogInfoInner(ctx, err, "failed to apply external controller")
+		}
+	}
+	for _, controller := range s.required {
+		if err := controller.controller(network, address, c); err != nil {
+			return errors.New("failed to apply required dialer controller").Base(err)
+		}
+	}
+	return nil
+}
+
+func (s dialerControllerSnapshot) controlOutboundSocket(ctx context.Context, network, address string, c syscall.RawConn, sockopt *SocketConfig) error {
+	if sockopt != nil {
+		if err := c.Control(func(fd uintptr) {
+			if err := applyOutboundSocketOptions(network, address, fd, sockopt); err != nil {
+				errors.LogInfoInner(ctx, err, "failed to apply socket options")
+			}
+		}); err != nil {
+			return err
+		}
+	}
+	return s.control(ctx, network, address, c)
+}
+
+// DialerControllerControl returns a control function backed by a stable snapshot
+// of the currently registered dialer controllers.
+func DialerControllerControl(ctx context.Context) func(network, address string, c syscall.RawConn) error {
+	controllers := snapshotDialerControllers()
+	return func(network, address string, c syscall.RawConn) error {
+		return controllers.control(ctx, network, address, c)
+	}
+}
 
 type SystemDialer interface {
 	Dial(ctx context.Context, source net.Address, destination net.Destination, sockopt *SocketConfig) (net.Conn, error)
@@ -48,6 +115,7 @@ func resolveSrcAddr(network net.Network, src net.Address) net.Addr {
 
 func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest net.Destination, sockopt *SocketConfig) (net.Conn, error) {
 	errors.LogDebug(ctx, "dialing to "+dest.String())
+	controllers := snapshotDialerControllers()
 
 	if dest.Network == net.Network_UDP {
 		srcAddr := resolveSrcAddr(net.Network_UDP, src)
@@ -63,18 +131,7 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 			return nil, err
 		}
 		lc.Control = func(network, address string, c syscall.RawConn) error {
-			for _, ctl := range Controllers {
-				if err := ctl(network, address, c); err != nil {
-					errors.LogInfoInner(ctx, err, "failed to apply external controller")
-				}
-			}
-			return c.Control(func(fd uintptr) {
-				if sockopt != nil {
-					if err := applyOutboundSocketOptions(network, destAddr.String(), fd, sockopt); err != nil {
-						errors.LogInfo(ctx, err, "failed to apply socket options")
-					}
-				}
-			})
+			return controllers.controlOutboundSocket(ctx, network, destAddr.String(), c, sockopt)
 		}
 		packetConn, err := lc.ListenPacket(ctx, srcAddr.Network(), srcAddr.String())
 		if err != nil {
@@ -115,23 +172,12 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 		KeepAliveConfig: keepAliveConfig,
 	}
 
-	if sockopt != nil || len(Controllers) > 0 {
+	if sockopt != nil || len(controllers.legacy) > 0 || len(controllers.required) > 0 {
 		if sockopt != nil && sockopt.TcpMptcp {
 			dialer.SetMultipathTCP(true)
 		}
 		dialer.Control = func(network, address string, c syscall.RawConn) error {
-			for _, ctl := range Controllers {
-				if err := ctl(network, address, c); err != nil {
-					errors.LogInfoInner(ctx, err, "failed to apply external controller")
-				}
-			}
-			return c.Control(func(fd uintptr) {
-				if sockopt != nil {
-					if err := applyOutboundSocketOptions(network, address, fd, sockopt); err != nil {
-						errors.LogInfoInner(ctx, err, "failed to apply socket options")
-					}
-				}
-			})
+			return controllers.controlOutboundSocket(ctx, network, address, c, sockopt)
 		}
 	}
 
@@ -213,6 +259,48 @@ func RegisterDialerController(ctl func(network, address string, c syscall.RawCon
 	}
 
 	return nil
+}
+
+type requiredDialerControllerRegistration struct {
+	id   uint64
+	once sync.Once
+}
+
+func (r *requiredDialerControllerRegistration) Close() error {
+	r.once.Do(func() {
+		ControllersLock.Lock()
+		defer ControllersLock.Unlock()
+		for i, controller := range requiredControllers {
+			if controller.id == r.id {
+				requiredControllers = append(requiredControllers[:i], requiredControllers[i+1:]...)
+				return
+			}
+		}
+	})
+	return nil
+}
+
+// RegisterRequiredDialerController registers a safety-critical controller.
+// Unlike legacy controllers, an error returned by a required controller aborts
+// connection establishment. Closing the returned registration is idempotent.
+func RegisterRequiredDialerController(controller func(network, address string, c syscall.RawConn) error) (io.Closer, error) {
+	if controller == nil {
+		return nil, errors.New("nil dialer controller")
+	}
+	if _, ok := effectiveSystemDialer.(*DefaultSystemDialer); !ok {
+		return nil, errors.New("RegisterRequiredDialerController not supported in custom dialer")
+	}
+
+	ControllersLock.Lock()
+	nextControllerID++
+	registration := &requiredDialerControllerRegistration{id: nextControllerID}
+	requiredControllers = append(requiredControllers, requiredDialerController{
+		id:         registration.id,
+		controller: controller,
+	})
+	ControllersLock.Unlock()
+
+	return registration, nil
 }
 
 type FakePacketConn struct {
