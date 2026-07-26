@@ -55,6 +55,7 @@ type FreeBSDTun struct {
 	systemDNSSet   bool
 	systemDNSDirty bool
 
+	plannedRoutes    []netip.Prefix
 	systemRoutes     []netip.Prefix
 	escapeMu         sync.Mutex
 	escapeRoutes     []escapeRoute
@@ -74,6 +75,18 @@ var _ Tun = (*FreeBSDTun)(nil)
 
 // NewTun builds new tun interface handler
 func NewTun(options *Config) (Tun, error) {
+	routes, err := buildSystemRoutes(options.AutoSystemRoutingTable)
+	if err != nil {
+		return nil, err
+	}
+	expanded := make([]string, 0, len(routes))
+	for _, prefix := range routes {
+		expanded = append(expanded, prefix.String())
+	}
+	plan, err := PlanAutomaticSystemRoutes(expanded, options.AutoSystemRoutingTableExclude, RouteCapacity{IPv4: maxAutomaticSystemRoutesPerFamily, IPv6: maxAutomaticSystemRoutesPerFamily})
+	if err != nil {
+		return nil, err
+	}
 	gateway, local, err := selectFreeBSDGateway(options.Gateway)
 	if err != nil {
 		return nil, err
@@ -114,12 +127,13 @@ func NewTun(options *Config) (Tun, error) {
 	}
 
 	return &FreeBSDTun{
-		device:   tunDev,
-		options:  options,
-		name:     name,
-		tunIndex: iface.Index,
-		gateway:  gateway,
-		local:    local,
+		device:        tunDev,
+		options:       options,
+		name:          name,
+		tunIndex:      iface.Index,
+		gateway:       gateway,
+		local:         local,
+		plannedRoutes: append(plan.IPv4, plan.IPv6...),
 	}, nil
 }
 
@@ -649,18 +663,14 @@ func setinterface(network, address string, fd uintptr, iface *net.Interface) err
 }
 
 func (t *FreeBSDTun) setSystemRoutes() error {
-	routes, err := buildSystemRoutes(t.options.AutoSystemRoutingTable)
-	if err != nil {
-		return err
-	}
+	routes := t.plannedRoutes
 	// Route through the interface, not a gateway: the tun(4) device is a
 	// broadcast interface here with no address resolution, so a next hop adds
 	// nothing. Interface routes sidestep the gateway entirely (what wg-quick
 	// does on FreeBSD).
 	for _, destination := range routes {
 		if err := execRoute(-1, unix.RTM_ADD, t.tunIndex, destination, netip.Addr{}); err != nil {
-			_ = t.unsetSystemRoutes()
-			return xerrors.New("failed to add system route ", destination).Base(err)
+			return xerrors.Combine(xerrors.New("failed to add system route ", destination).Base(err), t.unsetSystemRoutes())
 		}
 		t.systemRoutes = append(t.systemRoutes, destination)
 	}
