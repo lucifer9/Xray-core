@@ -2,7 +2,6 @@ package localdns
 
 import (
 	"context"
-	"syscall"
 	"time"
 
 	"github.com/xtls/xray-core/common/errors"
@@ -13,7 +12,6 @@ import (
 
 // Client is an implementation of dns.Client, which queries localhost for DNS.
 type Client struct {
-	d *net.Dialer
 	r *net.Resolver
 }
 
@@ -32,7 +30,7 @@ func (*Client) Close() error { return nil }
 func (c *Client) LookupIP(host string, option dns.IPOption) ([]net.IP, uint32, error) {
 	var ips []net.IP
 	var err error
-	if len(internet.Controllers) > 0 {
+	if internet.HasDialerControllers() {
 		ips, err = c.r.LookupIP(context.Background(), "ip", host)
 	} else {
 		ips, err = net.LookupIP(host)
@@ -77,35 +75,21 @@ func (c *Client) LookupIP(host string, option dns.IPOption) ([]net.IP, uint32, e
 
 // New create a new dns.Client that queries localhost for DNS.
 func New() *Client {
-	d := &net.Dialer{
-		Timeout: time.Second * 16,
-		Control: func(network, address string, c syscall.RawConn) error {
-			var errs []error
-			for _, ctl := range internet.Controllers {
-				if err := ctl(network, address, c); err != nil {
-					errs = append(errs, err)
-				}
-			}
-			err := errors.Combine(errs...)
-			if err != nil {
-				errors.LogInfoInner(context.Background(), err, "failed to apply external controller")
-			}
-			return err
-		},
-	}
-
 	r := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			if internet.IsSkippedDNSServer(address) {
 				return nil, errors.New("skipped DNS server ", address)
 			}
+			d := &net.Dialer{
+				Timeout: time.Second * 16,
+				Control: internet.DialerControllerControl(ctx),
+			}
 			return d.DialContext(ctx, network, address)
 		},
 	}
 
 	return &Client{
-		d: d,
 		r: r,
 	}
 }
