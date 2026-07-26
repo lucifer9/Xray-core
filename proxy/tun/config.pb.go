@@ -33,6 +33,7 @@ type Config struct {
 	Desc                          string                 `protobuf:"bytes,8,opt,name=desc,proto3" json:"desc,omitempty"`
 	AutoSystemDns                 bool                   `protobuf:"varint,9,opt,name=auto_system_dns,json=autoSystemDns,proto3" json:"auto_system_dns,omitempty"`
 	AutoSystemRoutingTableExclude []string               `protobuf:"bytes,10,rep,name=auto_system_routing_table_exclude,json=autoSystemRoutingTableExclude,proto3" json:"auto_system_routing_table_exclude,omitempty"`
+	EnableIcmpEchoForwarding      bool                   `protobuf:"varint,11,opt,name=enable_icmp_echo_forwarding,json=enableIcmpEchoForwarding,proto3" json:"enable_icmp_echo_forwarding,omitempty"`
 	unknownFields                 protoimpl.UnknownFields
 	sizeCache                     protoimpl.SizeCache
 }
@@ -137,11 +138,18 @@ func (x *Config) GetAutoSystemRoutingTableExclude() []string {
 	return nil
 }
 
+func (x *Config) GetEnableIcmpEchoForwarding() bool {
+	if x != nil {
+		return x.EnableIcmpEchoForwarding
+	}
+	return false
+}
+
 var File_proxy_tun_config_proto protoreflect.FileDescriptor
 
 const file_proxy_tun_config_proto_rawDesc = "" +
 	"\n" +
-	"\x16proxy/tun/config.proto\x12\x0exray.proxy.tun\"\xf4\x02\n" +
+	"\x16proxy/tun/config.proto\x12\x0exray.proxy.tun\"\xb3\x03\n" +
 	"\x06Config\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03MTU\x18\x02 \x01(\rR\x03MTU\x12\x18\n" +
@@ -154,7 +162,8 @@ const file_proxy_tun_config_proto_rawDesc = "" +
 	"\x04desc\x18\b \x01(\tR\x04desc\x12&\n" +
 	"\x0fauto_system_dns\x18\t \x01(\bR\rautoSystemDns\x12H\n" +
 	"!auto_system_routing_table_exclude\x18\n" +
-	" \x03(\tR\x1dautoSystemRoutingTableExcludeBL\n" +
+	" \x03(\tR\x1dautoSystemRoutingTableExclude\x12=\n" +
+	"\x1benable_icmp_echo_forwarding\x18\v \x01(\bR\x18enableIcmpEchoForwardingBL\n" +
 	"\x12com.xray.proxy.tunP\x01Z#github.com/xtls/xray-core/proxy/tun\xaa\x02\x0eXray.Proxy.Tunb\x06proto3"
 
 var (

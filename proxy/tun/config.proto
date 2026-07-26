@@ -17,4 +17,5 @@ message Config {
   string desc = 8;
   bool auto_system_dns = 9;
   repeated string auto_system_routing_table_exclude = 10;
+  bool enable_icmp_echo_forwarding = 11;
 }

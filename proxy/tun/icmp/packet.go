@@ -73,27 +73,30 @@ func RewriteChecksum(netProto tcpip.NetworkProtocolNumber, message []byte, srcIP
 }
 
 func BuildLocalEchoReply(netProto tcpip.NetworkProtocolNumber, request []byte, srcIP, dstIP tcpip.Address) ([]byte, error) {
-	reply := append([]byte(nil), request...)
+	identifier, sequence, ok := ParseEchoRequest(netProto, request)
+	if !ok {
+		return nil, errors.New("not an ICMP Echo request")
+	}
+	return BuildEchoReply(netProto, identifier, sequence, request[header.ICMPv4MinimumSize:], srcIP, dstIP)
+}
+
+func BuildEchoReply(netProto tcpip.NetworkProtocolNumber, identifier, sequence uint16, payload []byte, srcIP, dstIP tcpip.Address) ([]byte, error) {
+	reply := make([]byte, header.ICMPv4MinimumSize+len(payload))
+	copy(reply[header.ICMPv4MinimumSize:], payload)
 
 	switch netProto {
 	case header.IPv4ProtocolNumber:
-		if len(reply) < header.ICMPv4MinimumSize {
-			return nil, errors.New("invalid icmpv4 echo packet")
-		}
 		icmpHdr := header.ICMPv4(reply)
-		if icmpHdr.Type() != header.ICMPv4Echo || icmpHdr.Code() != header.ICMPv4UnusedCode {
-			return nil, errors.New("not an icmpv4 echo request")
-		}
-		reply[0] = byte(header.ICMPv4EchoReply)
+		icmpHdr.SetType(header.ICMPv4EchoReply)
+		icmpHdr.SetCode(header.ICMPv4UnusedCode)
+		icmpHdr.SetIdent(identifier)
+		icmpHdr.SetSequence(sequence)
 	case header.IPv6ProtocolNumber:
-		if len(reply) < header.ICMPv6MinimumSize {
-			return nil, errors.New("invalid icmpv6 echo packet")
-		}
 		icmpHdr := header.ICMPv6(reply)
-		if icmpHdr.Type() != header.ICMPv6EchoRequest || icmpHdr.Code() != header.ICMPv6UnusedCode {
-			return nil, errors.New("not an icmpv6 echo request")
-		}
-		reply[0] = byte(header.ICMPv6EchoReply)
+		icmpHdr.SetType(header.ICMPv6EchoReply)
+		icmpHdr.SetCode(header.ICMPv6UnusedCode)
+		icmpHdr.SetIdent(identifier)
+		icmpHdr.SetSequence(sequence)
 	default:
 		return nil, errors.New("unsupported icmp network protocol")
 	}
@@ -103,4 +106,70 @@ func BuildLocalEchoReply(netProto tcpip.NetworkProtocolNumber, request []byte, s
 	}
 
 	return reply, nil
+}
+
+// Maximum original-packet bytes quoted in a Destination Unreachable error
+// message: enough for the sender to match the error, bounded by the minimum
+// MTU each stack must accept.
+const (
+	maxIPv4UnreachableQuote = 576 - header.IPv4MinimumSize - header.ICMPv4MinimumSize
+	maxIPv6UnreachableQuote = 1280 - header.IPv6MinimumSize - header.ICMPv6MinimumSize
+)
+
+// BuildDestinationUnreachable builds an ICMP Destination Unreachable
+// (network unreachable) error message reporting that the packet from origSrc
+// to origDst, whose transport message is originalMessage, could not be
+// forwarded. The error is addressed from srcIP (the reporting router) to
+// dstIP (the original sender) and quotes the original packet like a router
+// would.
+func BuildDestinationUnreachable(netProto tcpip.NetworkProtocolNumber, originalMessage []byte, origSrc, origDst, srcIP, dstIP tcpip.Address) ([]byte, error) {
+	var quote []byte
+	switch netProto {
+	case header.IPv4ProtocolNumber:
+		quoted := min(len(originalMessage), maxIPv4UnreachableQuote-header.IPv4MinimumSize)
+		quote = make([]byte, header.IPv4MinimumSize+quoted)
+		ipHdr := header.IPv4(quote)
+		ipHdr.Encode(&header.IPv4Fields{
+			TotalLength: uint16(header.IPv4MinimumSize + len(originalMessage)),
+			TTL:         64,
+			Protocol:    uint8(header.ICMPv4ProtocolNumber),
+			SrcAddr:     origSrc,
+			DstAddr:     origDst,
+		})
+		ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
+		copy(quote[header.IPv4MinimumSize:], originalMessage[:quoted])
+	case header.IPv6ProtocolNumber:
+		quoted := min(len(originalMessage), maxIPv6UnreachableQuote-header.IPv6MinimumSize)
+		quote = make([]byte, header.IPv6MinimumSize+quoted)
+		ipHdr := header.IPv6(quote)
+		ipHdr.Encode(&header.IPv6Fields{
+			PayloadLength:     uint16(len(originalMessage)),
+			TransportProtocol: header.ICMPv6ProtocolNumber,
+			HopLimit:          64,
+			SrcAddr:           origSrc,
+			DstAddr:           origDst,
+		})
+		copy(quote[header.IPv6MinimumSize:], originalMessage[:quoted])
+	default:
+		return nil, errors.New("unsupported icmp network protocol")
+	}
+
+	message := make([]byte, header.ICMPv4MinimumSize+len(quote))
+	copy(message[header.ICMPv4MinimumSize:], quote)
+	switch netProto {
+	case header.IPv4ProtocolNumber:
+		icmpHdr := header.ICMPv4(message)
+		icmpHdr.SetType(header.ICMPv4DstUnreachable)
+		icmpHdr.SetCode(header.ICMPv4NetUnreachable)
+	case header.IPv6ProtocolNumber:
+		icmpHdr := header.ICMPv6(message)
+		icmpHdr.SetType(header.ICMPv6DstUnreachable)
+		icmpHdr.SetCode(header.ICMPv6NetworkUnreachable)
+	}
+
+	if err := RewriteChecksum(netProto, message, srcIP, dstIP); err != nil {
+		return nil, err
+	}
+
+	return message, nil
 }
