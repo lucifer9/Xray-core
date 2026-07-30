@@ -10,9 +10,9 @@ Checked against: `upstream/main@5ca6f4b7d4dc20a881d4330e498892697627ec0c`
 upstream/main
 └── main
     └── local/dial-controls       2832c088
-        └── local/tun-carrier-policy  df407f2c
-            └── local/route-exclusions  7b96270b
-                └── local/direct-echo  e5899311
+        └── local/tun-carrier-policy  473ef335
+            └── local/route-exclusions  a4d6e666
+                └── local/direct-echo  0746433f
                     └── dev
 ```
 
@@ -34,23 +34,25 @@ The 2026-07-28 and 2026-07-29 syncs were accepted and their `backup/dev-before-u
 | Issue | Behavior unit | Local branch | Local commit | Upstream status | Upstream commits | Residual delta |
 |---|---|---|---|---|---|---|
 | 01 | Lifecycle-scoped required dial controls | `local/dial-controls` | `2832c088` | `local-only` | — | Required controller lifecycle, stable snapshots, propagated failures, local DNS integration, and socket-option ordering |
-| 02 | Process-wide Outbound carrier policy ownership | `local/tun-carrier-policy` | `df407f2c` | `local-only` | — | Single lifecycle owner, restart-safe cleanup, family isolation, fail-closed connection legs, and loopback exemption |
-| 03 | Linux Outbound carrier tracking | `local/tun-carrier-policy` | `df407f2c` | `local-only` | — | Observer-before-snapshot startup, route/link refresh, and family-specific default-route selection |
-| 04 | macOS Outbound carrier tracking | `local/tun-carrier-policy` | `df407f2c` | `local-only` | — | Routing-socket observation, usable-route selection, iOS limitation, and family-specific socket binding |
-| 05 | Windows default-route carrier tracking | `local/tun-carrier-policy` | `df407f2c` | `local-only` | — | Route-table selection using combined metrics and route/interface change observation |
-| 06 | Common CIDR Automatic system route planner | `local/route-exclusions` | `7b96270b` | `local-only` | — | Deterministic normalization, subtraction, capacity checks, fuzz coverage, and large fixture |
-| 07 | Linux Excluded route prefixes | `local/route-exclusions` | `7b96270b` | `local-only` | — | Common plan installation, incremental ownership, and reverse rollback |
-| 08 | macOS Excluded route prefixes | `local/route-exclusions` | `7b96270b` | `local-only` | — | Exclusions after protected-default expansion and owned-route rollback |
-| 09 | Windows Excluded route prefixes | `local/route-exclusions` | `7b96270b` | `local-only` | — | Wintun routes derived from the common route plan |
-| 10 | Echo prober seam with Local Echo compatibility | `local/direct-echo` | `e5899311` | `local-only` | — | One lifecycle-aware prober seam for IPv4 and IPv6 with Local Echo as the default |
-| 11 | Bounded Direct Echo engine | `local/direct-echo` | `e5899311` | `local-only` | — | Shared sockets, remapping, matching, limits, carrier replacement, cancellation, and shutdown |
-| 12 | Linux Direct Echo transport | `local/direct-echo` | `e5899311` | `local-only` | — | Raw ICMPv4/ICMPv6 transport bound to the Linux carrier interface |
-| 13 | macOS Direct Echo transport | `local/direct-echo` | `e5899311` | `local-only` | — | Family-specific Darwin raw-socket binding and reply metadata |
-| 14 | Direct Echo activation | `local/direct-echo` | `e5899311` | `local-only` | — | Public configuration, supported-platform activation, startup validation, documentation, and explicit unsupported-platform failure |
+| 02 | Process-wide Outbound carrier policy ownership | `local/tun-carrier-policy` | `473ef335` | `local-only` | — | Single lifecycle owner, restart-safe cleanup, family isolation, fail-closed connection legs, and loopback exemption |
+| 03 | Linux Outbound carrier tracking | `local/tun-carrier-policy` | `473ef335` | `local-only` | — | Observer-before-snapshot startup, route/link refresh with failure-log de-duplication, and family-specific default-route selection |
+| 04 | macOS Outbound carrier tracking | `local/tun-carrier-policy` | `473ef335` | `local-only` | — | Routing-socket observation, usable-route selection, iOS limitation, and family-specific socket binding |
+| 05 | Windows default-route carrier tracking | `local/tun-carrier-policy` | `473ef335` | `local-only` | — | Route-table selection using combined metrics and route/interface change observation |
+| 06 | Common CIDR Automatic system route planner | `local/route-exclusions` | `a4d6e666` | `local-only` | — | Deterministic normalization, subtraction, capacity checks, fuzz coverage, and large fixture |
+| 07 | Linux Excluded route prefixes | `local/route-exclusions` | `a4d6e666` | `local-only` | — | Common plan installation, incremental ownership, and reverse rollback |
+| 08 | macOS Excluded route prefixes | `local/route-exclusions` | `a4d6e666` | `local-only` | — | Exclusions after protected-default expansion and owned-route rollback |
+| 09 | Windows Excluded route prefixes | `local/route-exclusions` | `a4d6e666` | `local-only` | — | Wintun routes derived from the common route plan |
+| 10 | Echo prober seam with Local Echo compatibility | `local/direct-echo` | `0746433f` | `local-only` | — | One lifecycle-aware prober seam for IPv4 and IPv6 with Local Echo as the default |
+| 11 | Bounded Direct Echo engine | `local/direct-echo` | `0746433f` | `local-only` | — | Shared sockets, remapping, matching, limits, carrier replacement, single-stack family degradation, cancellation, and shutdown |
+| 12 | Linux Direct Echo transport | `local/direct-echo` | `0746433f` | `local-only` | — | Raw ICMPv4/ICMPv6 transport bound to the Linux carrier interface |
+| 13 | macOS Direct Echo transport | `local/direct-echo` | `0746433f` | `local-only` | — | Family-specific Darwin raw-socket binding and reply metadata |
+| 14 | Direct Echo activation | `local/direct-echo` | `0746433f` | `local-only` | — | Public configuration, supported-platform activation, startup validation with per-family carrier degradation, ICMP network-unreachable reporting, documentation, and explicit unsupported-platform failure |
 
 The 2026-07-28 sync reviewed upstream commits `5b1b4105` and `4aba687d`. `5b1b4105` is patch-equivalent to the previous baseline's `d291486c` process-lookup fix, and `4aba687d` changes gRPC/XHTTP local-address reporting. Neither overlaps behavior units 01–14, so all residual deltas remain `local-only`.
 
 The 2026-07-29 sync reviewed upstream commits `6ab123bf`, `18e28390`, and `5ca6f4b7`. `6ab123bf` adds XMC finalmask directional padding under `transport/internet/finalmask/xmc`, `18e28390` reduces the XHTTP client default `maxConnections` in `infra/conf/transport_method.go`, and `5ca6f4b7` is the v26.7.28 version bump. None overlaps behavior units 01–14, so all residual deltas remain `local-only`; the patch queue was rebased verbatim (`range-diff` shows every patch unchanged).
+
+On 2026-07-30 the queue was refined in place without adding a behavior unit: `local/tun-carrier-policy` gained refresh failure-log de-duplication (unit 03), and `local/direct-echo` gained per-family startup degradation plus ICMP network-unreachable reporting when a family has no Outbound carrier (units 11 and 14). The fixups were squashed into their owning patches and the branch labels moved; no patch was added, dropped, or reordered. Validated with `go test ./proxy/tun/...` on each rewritten branch and on `dev`, plus a live single-stack (IPv4-only) host check of both behaviors.
 
 ## Verification at current baseline
 
