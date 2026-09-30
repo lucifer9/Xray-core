@@ -17,7 +17,7 @@ main                         6243d2a2
                 └── dev       (maintenance documentation)
 ```
 
-The previous base was `e5e85ca9`; the previous integration tip was `130d133a`. The previous topic tips were `ee4bb321`, `684a1777`, `6c6b79f0`, and `eee79670`. All five are preserved as `backup/<topic-or-dev>-before-main-rebase-20260930-100811`. The 2026-09-29 backups (`…-20260929-111722`) also remain.
+The previous base was `e5e85ca9`; the previous integration tip was `130d133a`. The previous topic tips were `ee4bb321`, `684a1777`, `6c6b79f0`, and `eee79670`. The 2026-09-29 and 2026-09-30 syncs were accepted and their `backup/*-before-main-rebase-*` refs removed.
 
 ## Upstream status vocabulary
 
