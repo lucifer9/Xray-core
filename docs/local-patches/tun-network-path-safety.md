@@ -4,20 +4,20 @@ This file tracks the behavior that remains local relative to the checked upstrea
 
 ## Patch stack
 
-Checked against: `main@e5e85ca9dada936ae736197ad2b7a685972e8e0f` (`origin/main`, XTLS #6834).
+Checked against: `main@6243d2a26e1136fc73a2b9cd5d9a8331a6d28ecc` (`origin/main`, XTLS #6867).
 
-This clone has only `origin`, not an `upstream` remote. The 2026-09-29 synchronization used the existing `main` without fetching, moving `main`, or pushing. Earlier entries used the name `upstream/main` for their checked baseline.
+This clone has only `origin`, not an `upstream` remote. The 2026-09-29 and 2026-09-30 synchronizations used the existing `main` without fetching, moving `main`, or pushing. Earlier entries used the name `upstream/main` for their checked baseline.
 
 ```text
-main                         e5e85ca9
-└── local/dial-controls       ee4bb321
-    └── local/tun-carrier-policy  684a1777
-        └── local/route-exclusions  6c6b79f0
-            └── local/direct-echo  eee79670
+main                         6243d2a2
+└── local/dial-controls       2c6023f3
+    └── local/tun-carrier-policy  5ebaf872
+        └── local/route-exclusions  3cebd0fe
+            └── local/direct-echo  0d592489
                 └── dev       (maintenance documentation)
 ```
 
-The previous base was `5ca6f4b7`; the previous integration tip was `c5352538`. The previous topic tips were `2832c088`, `473ef335`, `a4d6e666`, and `0746433f`. All five are preserved as `backup/<topic-or-dev>-before-main-rebase-20260929-111722`.
+The previous base was `e5e85ca9`; the previous integration tip was `130d133a`. The previous topic tips were `ee4bb321`, `684a1777`, `6c6b79f0`, and `eee79670`. All five are preserved as `backup/<topic-or-dev>-before-main-rebase-20260930-100811`. The 2026-09-29 backups (`…-20260929-111722`) also remain.
 
 ## Upstream status vocabulary
 
@@ -32,26 +32,35 @@ The previous base was `5ca6f4b7`; the previous integration tip was `c5352538`. T
 
 ## Behavior units
 
-All rows below are checked against `main@e5e85ca9`. Verification and platform limitations are recorded below the table. No complete local commit was absorbed or dropped.
+All rows below are checked against `main@6243d2a2`. Verification and platform limitations are recorded below the table. No complete local commit was absorbed or dropped.
 
 | Issue | Behavior unit | Local branch | Local commit | Upstream status | Upstream commits | Residual delta |
 |---|---|---|---|---|---|---|
-| 01 | Lifecycle-scoped required dial controls | `local/dial-controls` | `ee4bb321` | `local-only` | — | Required controller lifecycle, stable snapshots, propagated failures, local DNS integration, and socket-option ordering |
-| 02 | Process-wide Outbound carrier policy ownership | `local/tun-carrier-policy` | `684a1777` | `local-only` | — | Single lifecycle owner, restart-safe cleanup, family isolation, fail-closed connection legs, and loopback exemption |
-| 03 | Linux Outbound carrier tracking | `local/tun-carrier-policy` | `684a1777` | `local-only` | — | Observer-before-snapshot startup, route/link refresh with failure-log de-duplication, and family-specific default-route selection |
-| 04 | macOS Outbound carrier tracking | `local/tun-carrier-policy` | `684a1777` | `local-only` | — | Routing-socket observation, usable-route selection, iOS limitation, and family-specific socket binding |
-| 05 | Windows default-route carrier tracking | `local/tun-carrier-policy` | `684a1777` | `partial` | `c7245c03` | Family-specific route selection, combined-metric ordering without Wi-Fi preference, policy ownership, observer-before-snapshot startup, and failure cleanup; reuse upstream route-table APIs and route/interface notifications |
-| 06 | Common CIDR Automatic system route planner | `local/route-exclusions` | `6c6b79f0` | `local-only` | — | Deterministic normalization, subtraction, capacity checks, fuzz coverage, and large fixture |
-| 07 | Linux Excluded route prefixes | `local/route-exclusions` | `6c6b79f0` | `local-only` | — | Common plan installation, incremental ownership, and reverse rollback |
-| 08 | macOS Excluded route prefixes | `local/route-exclusions` | `6c6b79f0` | `local-only` | — | Exclusions after protected-default expansion and owned-route rollback |
-| 09 | Windows Excluded route prefixes | `local/route-exclusions` | `6c6b79f0` | `local-only` | — | Wintun routes derived from the common route plan |
-| 10 | Echo prober seam with Local Echo compatibility | `local/direct-echo` | `eee79670` | `local-only` | — | One lifecycle-aware prober seam for IPv4 and IPv6 with Local Echo as the default |
-| 11 | Bounded Direct Echo engine | `local/direct-echo` | `eee79670` | `local-only` | — | Shared sockets, remapping, matching, limits, carrier replacement, single-stack family degradation, cancellation, and shutdown |
-| 12 | Linux Direct Echo transport | `local/direct-echo` | `eee79670` | `local-only` | — | Raw ICMPv4/ICMPv6 transport bound to the Linux carrier interface |
-| 13 | macOS Direct Echo transport | `local/direct-echo` | `eee79670` | `local-only` | — | Family-specific Darwin raw-socket binding and reply metadata |
-| 14 | Direct Echo activation | `local/direct-echo` | `eee79670` | `local-only` | — | Public configuration, supported-platform activation, startup validation with per-family carrier degradation, ICMP network-unreachable reporting, documentation, and explicit unsupported-platform failure |
-| 15 | FreeBSD carrier policy integration | `local/tun-carrier-policy` | `684a1777` | `partial` | `c1958dba` | Retain upstream escape FIB implementation; connect it to the lifecycle owner, publish per-family carriers only after successful FIB synchronization, invalidate carriers on synchronization failure, and wait for monitor shutdown using a pollable descriptor |
-| 16 | FreeBSD Excluded route prefixes | `local/route-exclusions` | `6c6b79f0` | `local-only` | — | Apply the common planner after upstream protected-default expansion, validate before interface creation, and propagate route rollback failures |
+| 01 | Lifecycle-scoped required dial controls | `local/dial-controls` | `2c6023f3` | `local-only` | — | Required controller lifecycle, stable snapshots, propagated failures, local DNS integration, and socket-option ordering |
+| 02 | Process-wide Outbound carrier policy ownership | `local/tun-carrier-policy` | `5ebaf872` | `local-only` | — | Single lifecycle owner, restart-safe cleanup, family isolation, fail-closed connection legs, and loopback exemption |
+| 03 | Linux Outbound carrier tracking | `local/tun-carrier-policy` | `5ebaf872` | `local-only` | — | Observer-before-snapshot startup, route/link refresh with failure-log de-duplication, and family-specific default-route selection |
+| 04 | macOS Outbound carrier tracking | `local/tun-carrier-policy` | `5ebaf872` | `local-only` | — | Routing-socket observation, usable-route selection, iOS limitation, and family-specific socket binding |
+| 05 | Windows default-route carrier tracking | `local/tun-carrier-policy` | `5ebaf872` | `partial` | `c7245c03` | Family-specific route selection, combined-metric ordering without Wi-Fi preference, policy ownership, observer-before-snapshot startup, and failure cleanup; reuse upstream route-table APIs and route/interface notifications |
+| 06 | Common CIDR Automatic system route planner | `local/route-exclusions` | `3cebd0fe` | `local-only` | — | Deterministic normalization, subtraction, capacity checks, fuzz coverage, and large fixture |
+| 07 | Linux Excluded route prefixes | `local/route-exclusions` | `3cebd0fe` | `local-only` | — | Common plan installation, incremental ownership, and reverse rollback |
+| 08 | macOS Excluded route prefixes | `local/route-exclusions` | `3cebd0fe` | `local-only` | — | Exclusions after protected-default expansion and owned-route rollback |
+| 09 | Windows Excluded route prefixes | `local/route-exclusions` | `3cebd0fe` | `local-only` | — | Wintun routes derived from the common route plan |
+| 10 | Echo prober seam with Local Echo compatibility | `local/direct-echo` | `0d592489` | `local-only` | — | One lifecycle-aware prober seam for IPv4 and IPv6 with Local Echo as the default |
+| 11 | Bounded Direct Echo engine | `local/direct-echo` | `0d592489` | `local-only` | — | Shared sockets, remapping, matching, limits, carrier replacement, single-stack family degradation, cancellation, and shutdown |
+| 12 | Linux Direct Echo transport | `local/direct-echo` | `0d592489` | `local-only` | — | Raw ICMPv4/ICMPv6 transport bound to the Linux carrier interface |
+| 13 | macOS Direct Echo transport | `local/direct-echo` | `0d592489` | `local-only` | — | Family-specific Darwin raw-socket binding and reply metadata |
+| 14 | Direct Echo activation | `local/direct-echo` | `0d592489` | `local-only` | — | Public configuration, supported-platform activation, startup validation with per-family carrier degradation, ICMP network-unreachable reporting, documentation, and explicit unsupported-platform failure |
+| 15 | FreeBSD carrier policy integration | `local/tun-carrier-policy` | `5ebaf872` | `partial` | `c1958dba` | Retain upstream escape FIB implementation; connect it to the lifecycle owner, publish per-family carriers only after successful FIB synchronization, invalidate carriers on synchronization failure, and wait for monitor shutdown using a pollable descriptor |
+| 16 | FreeBSD Excluded route prefixes | `local/route-exclusions` | `3cebd0fe` | `local-only` | — | Apply the common planner after upstream protected-default expansion, validate before interface creation, and propagate route rollback failures |
+
+## 2026-09-30 integration decisions
+
+`main` advanced from `e5e85ca9` to `6243d2a2` with six commits. None overlaps units 01–16; every status above is unchanged and no local commit was absorbed or dropped.
+
+- `35e616d3` moves `PacketConnWrapper` from `transport/internet` to `common/net`. It is a type relocation only and does not touch controller registration, so unit 01 stays `local-only`. The one local reference (`connectionRawConn` in `system_dialer_controller_order_test.go`) now uses `net.PacketConnWrapper`; the fix is folded into the unit 01 commit rather than added as a separate commit.
+- `fc8f8a45` (XDNS finalmask), `6243d2a2` (geodata matchers), `0fc37920` (HTTPUpgrade headers), `48ad0300` (`api adu` Hysteria) and `08cb6e6b` (WireGuard startup races) do not touch `transport/internet` controllers, `features/dns/localdns`, `proxy/tun`, or `infra/conf/tun.go`.
+- `fc8f8a45` also changes `transport/internet/memory_settings.go` so `MemoryStreamConfig.FinalMask` is nil when no TCP/UDP masks are configured (previously always non-nil). This touches the dial path unit 02 depends on, so it was checked by reading code: the nil-mask branches in `proxy/wireguard`, `splithttp`, `hysteria`, `masque` and `kcp` dial through `internet.DialSystem`, which reaches `DefaultSystemDialer.Dial` where required controllers run. Masked paths still reach the same dialer through the `dialTCP`/`dialUDP` closures. No path skips the required controllers, so unit 02 stays `local-only`. No test exercises this end to end.
+- `git range-diff` against the previous stack shows only the unit 01 commit changed (the test fix above); the other six commits are patch-identical.
 
 ## 2026-09-29 integration decisions
 
@@ -66,7 +75,7 @@ All rows below are checked against `main@e5e85ca9`. Verification and platform li
 
 ## Verification at current baseline
 
-Validated on 2026-09-29 using Go 1.27.1 on macOS arm64. Linux arm64 test binaries and the application were cross-compiled locally and executed through `orb`; the VM has no Go toolchain.
+Validated on 2026-09-30 against `main@6243d2a2` using Go 1.27.1 on macOS arm64. Linux arm64 test binaries and the application were cross-compiled locally and executed through `orb`; the VM has no Go toolchain. Each of the four topic commits was also built (`go build ./...`) and vetted individually, so every layer of the stack compiles on its own.
 
 ### Passed
 
@@ -82,9 +91,9 @@ GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o <external-output>/xray-linux .
 ```
 
 - macOS tests include real IPv6 UDP socket binding and kqueue lifecycle tests. The built application also passed `run -test` with the combined TUN, exclusion, and Direct Echo JSON configuration.
-- Linux executed the `transport/internet`, `features/dns/localdns`, and `proxy/tun` test binaries, plus `infra/conf` tests matching `^TestTunConfig`.
-- Linux executed all four `TestLinux.*Smoke` tests as root in an isolated network namespace: raw socket creation, IPv4/IPv6 Direct Echo round trips, automatic route installation, and carrier tracking startup.
-- A live Linux application test used two isolated namespaces and veth-connected IPv4/IPv6 gateways. It verified TUN-routed Echo in both families, exclusion traffic staying on the physical route, replacing the carrier without restarting Xray, IPv4 continuing after removal of the IPv6 default route, an IPv6 network-unreachable reply, and TUN removal on shutdown. No VM host routes were changed.
+- Linux executed the `transport/internet`, `features/dns/localdns`, and `proxy/tun` test binaries as root from their package directories (`proxy/tun` reads `testdata/` by relative path), plus `infra/conf` tests matching `^TestTunConfig`.
+- Linux executed all four `TestLinux.*Smoke` tests as root in an isolated network namespace with a veth-connected IPv4/IPv6 gateway: raw socket creation, IPv4/IPv6 Direct Echo round trips, automatic route installation, and carrier tracking startup.
+- The live two-namespace application test from 2026-09-29 was not repeated. `main` changed nothing under `proxy/tun`, `features/dns/localdns`, or controller registration, and the topic commits are patch-identical to the 2026-09-29 stack except for one test-file line. `main` did change `PacketConnWrapper`'s package and how `FinalMask` is constructed on the dial path (see the integration decisions), so the 2026-09-29 result (TUN-routed Echo in both families, exclusion traffic staying on the physical route, carrier replacement without restart, IPv4 continuing after IPv6 default-route removal, IPv6 network-unreachable reply, TUN removal on shutdown) is carried over from the earlier stack and has not been re-observed on this base.
 - Windows amd64 and FreeBSD amd64 test binaries compiled for `transport/internet`, `features/dns/localdns`, `proxy/tun/...`, and `infra/conf`, using `go test -exec=/usr/bin/true` (compile/link only, not execution).
 - Android arm64 compiled the same packages except `infra/conf` (see below). iOS arm64 compiled/linked these packages with `CGO_ENABLED=1`; the host linker warned that it assumed macOS for Go object files, so this does not establish a deployable iOS build.
 - The protobuf/JSON regression test verifies that system DNS and Direct Echo can be enabled independently or together.
@@ -92,7 +101,7 @@ GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o <external-output>/xray-linux .
 
 ### Known baseline failures and unverified behavior
 
-- Full `go vet ./infra/conf` fails at `infra/conf/xray.go:620:3: unreachable code`. Reproduced on an untouched `main@e5e85ca9` worktree. Other vet checks pass with only that analyzer disabled; no unrelated source fix was made.
+- Full `go vet ./infra/conf` fails at `infra/conf/xray.go:620:3: unreachable code`. Reproduced on an untouched `main@6243d2a2` worktree. Other vet checks pass with only that analyzer disabled; no unrelated source fix was made.
 - Android `infra/conf` test linking fails with `github.com/wlynxg/anet: invalid reference to net.zoneCache`. Reproduced on untouched `main`; not introduced by these patches.
 - Windows and FreeBSD runtime network behavior is unverified. Android and iOS were not executed.
 - macOS privileged TUN/raw-ICMP end-to-end tests were not run: non-interactive sudo is unavailable. Socket-binding, kqueue, unit, race, build, and configuration checks passed without root.
