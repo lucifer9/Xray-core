@@ -1,7 +1,7 @@
 ---
 name: upstream-sync
 description: Synchronize a long-lived local Git patch stack with its upstream branch while preserving local features, detecting exact or partial upstream overlap, shrinking absorbed patches, and validating the residual delta. Use when asked to fetch, rebase, merge, compare, or sync upstream changes into this repository without opening a PR.
-compatibility: Requires git and a repository with an upstream remote. This repository uses upstream/main, stacked local/* topic branches, dev as the integration branch, and docs/local-patches/tun-network-path-safety.md as the patch ledger.
+compatibility: Requires git and a repository with an upstream remote. This repository uses upstream/main, stacked local/* topic branches, dev as the integration branch, and the patch ledgers under docs/local-patches/.
 ---
 
 # Upstream Sync
@@ -19,12 +19,13 @@ upstream/main
         └── local/tun-carrier-policy
             └── local/route-exclusions
                 └── local/direct-echo
-                    └── dev
+                    └── local/panel
+                        └── dev
 ```
 
 `main` is a clean upstream mirror. Topic branches form a stacked patch queue. `dev` is the validated integration branch.
 
-Read `docs/local-patches/tun-network-path-safety.md` before changing refs. Treat its behavior units and upstream statuses as the source of truth for what local functionality must remain.
+Read `docs/local-patches/tun-network-path-safety.md` and `docs/local-patches/balancer-panel.md` before changing refs. Treat their behavior units and upstream statuses as the source of truth for what local functionality must remain.
 
 ## Safety boundaries
 
@@ -129,6 +130,7 @@ Rebase or rebuild topics in this order:
 2. `local/tun-carrier-policy`
 3. `local/route-exclusions`
 4. `local/direct-echo`
+5. `local/panel`
 
 The first topic rebases onto `upstream/main`; every later topic rebases onto the newly validated parent topic. Use temporary topic refs while working when existing topic branches must remain stable.
 
@@ -166,6 +168,9 @@ For this patch stack, the minimum targeted checks are:
 go test ./transport/internet ./features/dns/localdns ./proxy/tun
 go test ./infra/conf -run '^TestTunConfig'
 go test -race ./transport/internet ./features/dns/localdns ./proxy/tun
+go test ./app/panel ./app/metrics ./app/observatory/burst
+go test ./app/router -skip TestChinaSites
+go test -race ./app/panel ./app/router -run 'Panel|ListBalancers|SetRuleBalancer'
 ```
 
 Compare the old and new patch queues:
