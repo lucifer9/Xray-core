@@ -14,7 +14,8 @@ main 7da5dae6
     └── local/tun-carrier-policy  65c1d8d3
         └── local/route-exclusions  def2701e
             └── local/direct-echo  bcf2d9fa
-                └── dev       (maintenance documentation)
+                └── local/panel  2afb5911  (see balancer-panel.md)
+                    └── dev       (maintenance documentation)
 ```
 
 Before the 2026-09-29 synchronization, the base was `e5e85ca9` and the integration tip was `130d133a`. The previous topic tips were `ee4bb321`, `684a1777`, `6c6b79f0`, and `eee79670`. The 2026-09-29 and 2026-09-30 syncs were accepted and their `backup/*-before-main-rebase-*` refs removed.
