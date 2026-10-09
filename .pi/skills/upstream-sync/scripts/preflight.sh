@@ -46,6 +46,7 @@ for branch in \
   local/tun-carrier-policy \
   local/route-exclusions \
   local/direct-echo \
+  local/panel \
   dev \
   main; do
   if git show-ref --verify --quiet "refs/heads/$branch"; then
