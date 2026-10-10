@@ -4,7 +4,7 @@ This file tracks the local web panel for inspecting and switching balancers. It 
 
 ## Patch stack
 
-Checked against: `main@7da5dae6502b787fc6d903863e9a6c5043d107a2` (local mirror).
+Checked against: `main@836a6fed385b902e437dde43ee9adc82d23a5303` (local mirror).
 
 `local/panel` stacks on `local/direct-echo` but does not depend on any TUN behavior; it can be rebased onto any parent that builds.
 
@@ -22,14 +22,16 @@ The panel is disabled with a warning when the instance does not use the built-in
 
 | Issue | Behavior unit | Local commit | Upstream status | Residual delta |
 |---|---|---|---|---|
-| P1 | Router inspection | `9d5725ef` | `local-only` | `Router.ListBalancers` (selectors, strategy, fallback, candidates, override, principle) and `Router.ListRuleTargets` (rule to outbound or balancer tag); upstream `ListRule` omits balancer tags and there is no balancer listing |
-| P2 | Atomic rule balancer switch | `9d5725ef` | `local-only` | `Router.SetRuleBalancer` swaps the rule slice under the router mutex; upstream only offers RemoveRule then AddRule, which leaves a window where traffic misses the rule |
-| P3 | Latest burst probe result | `facce591` | `local-only` | `burst.Observer.LatestResults`; upstream exposes only window statistics, so a single on-demand `Check` result is not observable |
-| P4 | Panel HTTP handler | `2afb5911` | `local-only` | `app/panel` (embedded page and JSON API: status, override, rule switch, route test, on-demand check) and one mount in `app/metrics.httpHandler` |
+| P1 | Router inspection | `9e7818de` | `local-only` | `Router.ListBalancers` (selectors, strategy, fallback, candidates, override, principle) and `Router.ListRuleTargets` (rule to outbound or balancer tag); upstream `ListRule` omits balancer tags and there is no balancer listing |
+| P2 | Atomic rule balancer switch | `9e7818de` | `local-only` | `Router.SetRuleBalancer` swaps the rule slice under the router mutex; upstream only offers RemoveRule then AddRule, which leaves a window where traffic misses the rule |
+| P3 | Latest burst probe result | `8efffa04` | `local-only` | `burst.Observer.LatestResults`; upstream exposes only window statistics, so a single on-demand `Check` result is not observable |
+| P4 | Panel HTTP handler | `78a96146` | `local-only` | `app/panel` (embedded page and JSON API: status, override, rule switch, route test, on-demand check) and one mount in `app/metrics.httpHandler` |
 
 Upstream overlap signals to watch: new RoutingService methods for balancer listing or rule updates (P1, P2), an ObservatoryService method for on-demand checks or per-sample results (P3), and changes to `app/metrics.httpHandler` (P4 mount conflict).
 
 ## Verification at current baseline
+
+Revalidated on 2026-10-10 against `main@836a6fed` using Go 1.27.2 on macOS arm64: the seven upstream commits do not touch `app/router`, `app/metrics`, `app/observatory`, or `app/panel`, the three panel commits are patch-identical, and the package tests and race tests below passed again. The smoke test was not repeated.
 
 Validated on 2026-10-09 against `main@7da5dae6` using Go 1.27.2 on macOS arm64.
 
