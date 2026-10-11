@@ -4,17 +4,17 @@ This file tracks the behavior that remains local relative to the checked upstrea
 
 ## Patch stack
 
-Checked against: `main@836a6fed385b902e437dde43ee9adc82d23a5303` (local mirror).
+Checked against: `main@701af60772cda123492f86e383e1fdba066614a9` (equal to `upstream/main` at sync time).
 
-This clone has only `origin`, not an `upstream` remote. The 2026-09-29 and 2026-09-30 synchronizations used the existing `main` without fetching, moving `main`, or pushing. Earlier entries used the name `upstream/main` for their checked baseline.
+The clone now has an `upstream` remote, and `main` mirrors `upstream/main`. The 2026-09-29 and 2026-09-30 synchronizations used the existing `main` without fetching, moving `main`, or pushing.
 
 ```text
-main 836a6fed
-└── local/dial-controls  8c02ab70
-    └── local/tun-carrier-policy  2065f89a
-        └── local/route-exclusions  ee567f24
-            └── local/direct-echo  9c63a78b
-                └── local/panel  78a96146  (see balancer-panel.md)
+main 701af607
+└── local/dial-controls  895a031c
+    └── local/tun-carrier-policy  6b4767c5
+        └── local/route-exclusions  f7ad1f1d
+            └── local/direct-echo  1fa18904
+                └── local/panel  c07c9c6e  (see balancer-panel.md)
                     └── dev       (maintenance documentation)
 ```
 
@@ -33,26 +33,45 @@ Before the 2026-09-29 synchronization, the base was `e5e85ca9` and the integrati
 
 ## Behavior units
 
-All rows below are checked against `main@836a6fed`. Verification and platform limitations are recorded below the table. No complete local commit was absorbed or dropped.
+All rows below are checked against `main@701af607`. Verification and platform limitations are recorded below the table. No complete local commit was absorbed or dropped.
 
 | Issue | Behavior unit | Local branch | Local commit | Upstream status | Upstream commits | Residual delta |
 |---|---|---|---|---|---|---|
-| 01 | Lifecycle-scoped required dial controls | `local/dial-controls` | `8c02ab70` | `local-only` | — | Required controller lifecycle, stable snapshots, propagated failures, local DNS integration, and socket-option ordering |
-| 02 | Process-wide Outbound carrier policy ownership | `local/tun-carrier-policy` | `2065f89a` | `local-only` | — | Single lifecycle owner, restart-safe cleanup, family isolation, fail-closed connection legs, and loopback exemption |
-| 03 | Linux Outbound carrier tracking | `local/tun-carrier-policy` | `2065f89a` | `local-only` | — | Observer-before-snapshot startup, route/link refresh with failure-log de-duplication, and family-specific default-route selection |
-| 04 | macOS Outbound carrier tracking | `local/tun-carrier-policy` | `2065f89a` | `local-only` | — | Routing-socket observation, usable-route selection, iOS limitation, and family-specific socket binding |
-| 05 | Windows default-route carrier tracking | `local/tun-carrier-policy` | `2065f89a` | `partial` | `c7245c03`, `1f304916`, `8989adfd` | Family-specific route selection, combined-metric ordering without Wi-Fi preference, policy ownership, observer-before-snapshot startup, and failure cleanup; required-controller integration for upstream WFP DNS resolution; upstream weak host send guard driven by the per-family carriers and the local tracking refresh; reuse upstream route-table APIs and route/interface notifications |
-| 06 | Common CIDR Automatic system route planner | `local/route-exclusions` | `ee567f24` | `local-only` | — | Deterministic normalization, subtraction, capacity checks, fuzz coverage, and large fixture |
-| 07 | Linux Excluded route prefixes | `local/route-exclusions` | `ee567f24` | `local-only` | — | Common plan installation, incremental ownership, and reverse rollback |
-| 08 | macOS Excluded route prefixes | `local/route-exclusions` | `ee567f24` | `local-only` | — | Exclusions after protected-default expansion and owned-route rollback |
-| 09 | Windows Excluded route prefixes | `local/route-exclusions` | `ee567f24` | `local-only` | — | Wintun routes derived from the common route plan |
-| 10 | Echo prober seam with Local Echo compatibility | `local/direct-echo` | `9c63a78b` | `local-only` | — | One lifecycle-aware prober seam for IPv4 and IPv6 with Local Echo as the default |
-| 11 | Bounded Direct Echo engine | `local/direct-echo` | `9c63a78b` | `local-only` | — | Shared sockets, remapping, matching, limits, carrier replacement, single-stack family degradation, cancellation, and shutdown |
-| 12 | Linux Direct Echo transport | `local/direct-echo` | `9c63a78b` | `local-only` | — | Raw ICMPv4/ICMPv6 transport bound to the Linux carrier interface |
-| 13 | macOS Direct Echo transport | `local/direct-echo` | `9c63a78b` | `local-only` | — | Family-specific Darwin raw-socket binding and reply metadata |
-| 14 | Direct Echo activation | `local/direct-echo` | `9c63a78b` | `local-only` | — | Public configuration, supported-platform activation, startup validation with per-family carrier degradation, ICMP network-unreachable reporting, documentation, and explicit unsupported-platform failure |
-| 15 | FreeBSD carrier policy integration | `local/tun-carrier-policy` | `2065f89a` | `partial` | `c1958dba` | Retain upstream escape FIB implementation; connect it to the lifecycle owner, publish per-family carriers only after successful FIB synchronization, invalidate carriers on synchronization failure, and wait for monitor shutdown using a pollable descriptor |
-| 16 | FreeBSD Excluded route prefixes | `local/route-exclusions` | `ee567f24` | `local-only` | — | Apply the common planner after upstream protected-default expansion, validate before interface creation, and propagate route rollback failures |
+| 01 | Lifecycle-scoped required dial controls | `local/dial-controls` | `895a031c` | `local-only` | — | Required controller lifecycle, stable snapshots, propagated failures, local DNS integration, and socket-option ordering |
+| 02 | Process-wide Outbound carrier policy ownership | `local/tun-carrier-policy` | `6b4767c5` | `local-only` | — | Single lifecycle owner, restart-safe cleanup, family isolation, fail-closed connection legs, and loopback exemption |
+| 03 | Linux Outbound carrier tracking | `local/tun-carrier-policy` | `6b4767c5` | `local-only` | — | Observer-before-snapshot startup, route/link refresh with failure-log de-duplication, and family-specific default-route selection |
+| 04 | macOS Outbound carrier tracking | `local/tun-carrier-policy` | `6b4767c5` | `local-only` | — | Routing-socket observation, usable-route selection, iOS limitation, and family-specific socket binding |
+| 05 | Windows default-route carrier tracking | `local/tun-carrier-policy` | `6b4767c5` | `partial` | `c7245c03`, `1f304916`, `8989adfd` | Family-specific route selection, combined-metric ordering without Wi-Fi preference, policy ownership, observer-before-snapshot startup, and failure cleanup; required-controller integration for upstream WFP DNS resolution; upstream weak host send guard driven by the per-family carriers and the local tracking refresh; reuse upstream route-table APIs and route/interface notifications |
+| 06 | Common CIDR Automatic system route planner | `local/route-exclusions` | `f7ad1f1d` | `local-only` | — | Deterministic normalization, subtraction, capacity checks, fuzz coverage, and large fixture |
+| 07 | Linux Excluded route prefixes | `local/route-exclusions` | `f7ad1f1d` | `local-only` | — | Common plan installation, incremental ownership, and reverse rollback |
+| 08 | macOS Excluded route prefixes | `local/route-exclusions` | `f7ad1f1d` | `local-only` | — | Exclusions after protected-default expansion and owned-route rollback |
+| 09 | Windows Excluded route prefixes | `local/route-exclusions` | `f7ad1f1d` | `local-only` | — | Wintun routes derived from the common route plan |
+| 10 | Echo prober seam with Local Echo compatibility | `local/direct-echo` | `1fa18904` | `local-only` | — | One lifecycle-aware prober seam for IPv4 and IPv6 with Local Echo as the default |
+| 11 | Bounded Direct Echo engine | `local/direct-echo` | `1fa18904` | `local-only` | — | Shared sockets, remapping, matching, limits, carrier replacement, single-stack family degradation, cancellation, and shutdown |
+| 12 | Linux Direct Echo transport | `local/direct-echo` | `1fa18904` | `local-only` | — | Raw ICMPv4/ICMPv6 transport bound to the Linux carrier interface |
+| 13 | macOS Direct Echo transport | `local/direct-echo` | `1fa18904` | `local-only` | — | Family-specific Darwin raw-socket binding and reply metadata |
+| 14 | Direct Echo activation | `local/direct-echo` | `1fa18904` | `local-only` | — | Public configuration, supported-platform activation, startup validation with per-family carrier degradation, ICMP network-unreachable reporting, documentation, and explicit unsupported-platform failure |
+| 15 | FreeBSD carrier policy integration | `local/tun-carrier-policy` | `6b4767c5` | `partial` | `c1958dba` | Retain upstream escape FIB implementation; connect it to the lifecycle owner, publish per-family carriers only after successful FIB synchronization, invalidate carriers on synchronization failure, and wait for monitor shutdown using a pollable descriptor |
+| 16 | FreeBSD Excluded route prefixes | `local/route-exclusions` | `f7ad1f1d` | `local-only` | — | Apply the common planner after upstream protected-default expansion, validate before interface creation, and propagate route rollback failures |
+
+## 2026-10-11 integration decisions
+
+`main` advanced from `836a6fed` to `701af607` with 6 commits. No file touched by upstream is touched by the local stack, and no behavior unit was absorbed or dropped. The old integration tip was `e8ef14da`; it remains at `backup/dev-before-upstream-sync-20261011-082431`, and the old topic tips at `backup/local-*-before-sync-20261011-082431`.
+
+- `c7dbfd5e` (Hysteria) removes cached clients of stopped instances and locks `Instance.IsRunning`. The QUIC dial path is unchanged and still reaches the required controllers, so unit 02 stays `local-only`.
+- `2cc08769` (ECH DoH) only adds MITM context values before the existing `internet.DialSystem` call; unit 02 is unchanged.
+- `5af2e9c2` (built-in TLS root CAs), `aa7aa9ad` (MASQUE WARP key handling), `8855145e` (Lua `script` for DNS and routing; see balancer-panel.md) and `701af607` (version) do not touch units 01–16.
+- `git range-diff` shows all 15 local commits patch-identical; the rebase had no conflicts.
+
+## Verification at current baseline
+
+Validated on 2026-10-11 against `main@701af607` using Go 1.27.2 on macOS arm64.
+
+- Each of the seven topic commits passed `go build ./...` and `go vet` for `transport/internet`, `features/dns/localdns`, and `proxy/tun/...` on Darwin, plus Windows and Linux vet for `proxy/tun/...`.
+- The integration tree passed `go test` and `go test -race` for `./transport/internet ./features/dns/localdns ./proxy/tun/...` and `./infra/conf -run '^TestTunConfig'`, plus `go test` for `transport/internet/hysteria` and `core`, which upstream touched.
+- Darwin arm64, Linux arm64/amd64, Windows amd64, and FreeBSD amd64 application builds passed. Windows, Linux, FreeBSD, and Android affected-package test binaries compiled/linked with `-exec=/usr/bin/true`; iOS arm64 `proxy/tun` test binaries compiled/linked with `CGO_ENABLED=1`.
+- `app/dns` `TestDOHNameServer` (external DoH EOF) and `TestDNSScriptGeoIPFallback` fail identically on untouched `main@701af607`. Test binaries for `transport/internet/tls`, `masque`, and Hysteria `bbr` could not be built because `github.com/stretchr/testify@v1.12.1` could not be downloaded; those packages built through `go build ./...`.
+- Linux privileged smoke tests, Windows/FreeBSD runtime behavior, Android/iOS execution, and privileged macOS TUN end-to-end behavior were not run in this sync.
 
 ## 2026-10-10 integration decisions
 
@@ -64,7 +83,7 @@ All rows below are checked against `main@836a6fed`. Verification and platform li
 - `37184948` (XDNS finalmask), `2eedef51` (DNS pubsub), `2a14c507` (SOCKS UDP statistics) and `836a6fed` (mux UDP) do not touch units 01–16.
 - `git range-diff` shows only the carrier-policy commit changed; the other 13 commits are patch-identical.
 
-## Verification at current baseline
+## Verification at 2026-10-10 baseline
 
 Validated on 2026-10-10 against `main@836a6fed` using Go 1.27.2 on macOS arm64.
 
