@@ -15,15 +15,15 @@ For this repository, use this dependency order:
 ```text
 upstream/main
 └── main
-    └── local/dial-controls
-        └── local/tun-carrier-policy
-            └── local/route-exclusions
-                └── local/direct-echo
-                    └── local/panel
-                        └── dev
+    ├── local/tun-carrier-policy
+    │   └── local/route-exclusions
+    │       └── local/direct-echo
+    └── local/panel
+
+dev = --no-ff merge of local/direct-echo and local/panel, then maintenance documentation
 ```
 
-`main` is a clean upstream mirror. Topic branches form a stacked patch queue. `dev` is the validated integration branch.
+`main` is a clean upstream mirror. The TUN topics form a stacked patch queue; `local/panel` is an independent topic on `main`. `dev` is the validated integration branch: a `--no-ff` merge of `local/direct-echo` and `local/panel`, followed by the maintenance documentation commits.
 
 Read `docs/local-patches/tun-network-path-safety.md` and `docs/local-patches/balancer-panel.md` before changing refs. Treat their behavior units and upstream statuses as the source of truth for what local functionality must remain.
 
@@ -126,13 +126,14 @@ When upstream partially absorbs a commit:
 
 Rebase or rebuild topics in this order:
 
-1. `local/dial-controls`
-2. `local/tun-carrier-policy`
-3. `local/route-exclusions`
-4. `local/direct-echo`
-5. `local/panel`
+1. `local/tun-carrier-policy`
+2. `local/route-exclusions`
+3. `local/direct-echo`
+4. `local/panel`
 
-The first topic rebases onto `upstream/main`; every later topic rebases onto the newly validated parent topic. Use temporary topic refs while working when existing topic branches must remain stable.
+`local/tun-carrier-policy` and `local/panel` rebase onto `upstream/main`; `local/route-exclusions` and `local/direct-echo` rebase onto their newly validated parent topic. Use temporary topic refs while working when existing topic branches must remain stable.
+
+Then rebuild `dev`: create a `--no-ff` merge of the new `local/direct-echo` and `local/panel` tips, and cherry-pick the maintenance documentation commits that followed the previous merge commit onto it. Code changes never live in `dev` itself.
 
 For each topic:
 
@@ -176,7 +177,8 @@ go test -race ./app/panel ./app/router -run 'Panel|ListBalancers|SetRuleBalancer
 Compare the old and new patch queues:
 
 ```bash
-git range-diff <old-base>..<old-tip> upstream/main..<new-tip>
+git range-diff <old-base>..<old-direct-echo> upstream/main..<new-direct-echo>
+git range-diff <old-base>..<old-panel> upstream/main..<new-panel>
 ```
 
 Review the final delta:
