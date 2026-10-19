@@ -42,7 +42,6 @@ git remote -v
 
 printf '\nTopic branches:\n'
 for branch in \
-  local/dial-controls \
   local/tun-carrier-policy \
   local/route-exclusions \
   local/direct-echo \
