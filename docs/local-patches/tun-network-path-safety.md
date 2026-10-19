@@ -83,7 +83,7 @@ Validated on 2026-10-19 against `main@92ccc939` using Go 1.27.2 on macOS arm64.
 
 ## 2026-10-11 integration decisions
 
-`main` advanced from `836a6fed` to `701af607` with 6 commits. No file touched by upstream is touched by the local stack, and no behavior unit was absorbed or dropped. The old integration tip was `e8ef14da`; it remains at `backup/dev-before-upstream-sync-20261011-082431`, and the old topic tips at `backup/local-*-before-sync-20261011-082431`.
+`main` advanced from `836a6fed` to `701af607` with 6 commits. No file touched by upstream is touched by the local stack, and no behavior unit was absorbed or dropped. The old integration tip was `e8ef14da`. The sync was accepted and its `backup/*-before-*-20261011-082431` refs were removed.
 
 - `c7dbfd5e` (Hysteria) removes cached clients of stopped instances and locks `Instance.IsRunning`. The QUIC dial path is unchanged and still reaches the required controllers, so unit 02 stays `local-only`.
 - `2cc08769` (ECH DoH) only adds MITM context values before the existing `internet.DialSystem` call; unit 02 is unchanged.
@@ -102,7 +102,7 @@ Validated on 2026-10-11 against `main@701af607` using Go 1.27.2 on macOS arm64.
 
 ## 2026-10-10 integration decisions
 
-`main` advanced from `7da5dae6` to `836a6fed` with 7 commits. No complete topic or behavior unit was absorbed or dropped. The old integration tip was `b1ff120c`; it remains at `backup/dev-before-upstream-sync-20261010-090750`, and the old topic tips at `backup/local-*-before-sync-20261010-090750`. No remote refs were changed.
+`main` advanced from `7da5dae6` to `836a6fed` with 7 commits. No complete topic or behavior unit was absorbed or dropped. The old integration tip was `b1ff120c`. The sync was accepted and its `backup/*-before-*-20261010-090750` refs were removed. No remote refs were changed.
 
 - `8989adfd` adds a Windows `outboundGuard` that turns weak host send off on the `autoOutboundsInterface` interface for the IP versions routed to the TUN, restores it on stop or interface change, and warns while forwarding is on. Windows ignores the carrier binding otherwise, so unit 05 needs this behavior as well. Upstream drives the guard from the legacy `updater.Get()` and its own route/interface callbacks, which unit 05 replaced. Keep the guard's behavior, but read each guarded IP version's carrier from `outboundCarrierPolicy.carrier`, since IPv4 and IPv6 may use different interfaces, and keep state per IP version. `Start` sets the routed IP versions and runs the first check; the local tracking refresh runs it after every route/interface notification; `Close` restores weak host send after tracking stops. No second callback pair or updater is reinstated.
 - `1a60fc78` duplicates the iOS NetworkExtension descriptor and always closes Xray's own copy. It merged cleanly into the local Darwin tracking changes; unit 04 is unchanged.
@@ -121,7 +121,7 @@ Validated on 2026-10-10 against `main@836a6fed` using Go 1.27.2 on macOS arm64.
 
 ## 2026-10-07 integration decisions
 
-`main` advanced from `6243d2a2` to `7da5dae6` with 14 commits. No complete topic or behavior unit was absorbed or dropped. The old integration tip was `d8add1e1`; it remains at `backup/dev-before-upstream-sync-20261007-135031`. No remote refs were changed.
+`main` advanced from `6243d2a2` to `7da5dae6` with 14 commits. No complete topic or behavior unit was absorbed or dropped. The old integration tip was `d8add1e1`. The sync was accepted and its `backup/dev-before-upstream-sync-20261007-135031` ref was removed. No remote refs were changed.
 
 - `1f304916` adds Windows WFP leak blocking and DNS skip handling, renames Linux `autoSystemDNS` to `autoSystemDnsToGateway`, and makes system DNS configuration failure stop startup. WFP permits Xray's own traffic, so it does not replace the carrier policy. Callback-registration failure cleanup has small behavioral overlap with unit 05; retain the single local tracking lifecycle rather than reinstating upstream's legacy updater/callbacks.
 - Preserve upstream DNS skip checks alongside lifecycle-scoped required controllers in localdns. Windows' new `resolveOnOwn` must also obtain `DialerControllerControl(ctx)` for every DNS dial, rather than iterate the legacy controller list. Its regression test verifies required errors propagate and closing the registration allows later DNS dials.
