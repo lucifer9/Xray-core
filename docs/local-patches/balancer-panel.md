@@ -4,7 +4,7 @@ This file tracks the local web panel for inspecting and switching balancers. It 
 
 ## Patch stack
 
-Checked against: `main@92ccc939aaf4f8965f369cf0b142e005aeaa11d5` (equal to `upstream/main` at sync time).
+Checked against: `main@1b1647cd9ddf0abc34b981d4611fc03bcac1ca74` (equal to `upstream/main` at sync time).
 
 `local/panel` is based directly on `main` and does not depend on any TUN behavior; `dev` merges it with `local/direct-echo`.
 
@@ -22,16 +22,18 @@ The panel is disabled with a warning when the instance does not use the built-in
 
 | Issue | Behavior unit | Local commit | Upstream status | Residual delta |
 |---|---|---|---|---|
-| P1 | Router inspection | `b1f197fb` | `local-only` | `Router.ListBalancers` (selectors, strategy, fallback, candidates, override, principle) and `Router.ListRuleTargets` (rule to outbound or balancer tag); upstream `ListRule` omits balancer tags and there is no balancer listing |
-| P2 | Atomic rule balancer switch | `b1f197fb` | `local-only` | `Router.SetRuleBalancer` swaps the rule slice under the router mutex; upstream only offers RemoveRule then AddRule, which leaves a window where traffic misses the rule |
-| P3 | Latest burst probe result | `8be578e8` | `local-only` | `burst.Observer.LatestResults`; upstream exposes only window statistics, so a single on-demand `Check` result is not observable |
-| P4 | Panel HTTP handler | `aaeae4f2` | `local-only` | `app/panel` (embedded page and JSON API: status, override, rule switch, route test, on-demand check) and one mount in `app/metrics.httpHandler` |
+| P1 | Router inspection | `c593eaac` | `local-only` | `Router.ListBalancers` (selectors, strategy, fallback, candidates, override, principle) and `Router.ListRuleTargets` (rule to outbound or balancer tag); upstream `ListRule` omits balancer tags and there is no balancer listing |
+| P2 | Atomic rule balancer switch | `c593eaac` | `local-only` | `Router.SetRuleBalancer` swaps the rule slice under the router mutex; upstream only offers RemoveRule then AddRule, which leaves a window where traffic misses the rule |
+| P3 | Latest burst probe result | `77c93fe2` | `local-only` | `burst.Observer.LatestResults`; upstream exposes only window statistics, so a single on-demand `Check` result is not observable |
+| P4 | Panel HTTP handler | `c9af85f4` | `local-only` | `app/panel` (embedded page and JSON API: status, override, rule switch, route test, on-demand check) and one mount in `app/metrics.httpHandler` |
 
 Interaction with upstream Lua routing (`8855145e`, checked 2026-10-11): when `routing.script` is set, `Router.PickRoute` returns the script's result and never consults the rule list. P1 still lists rules and balancers, and P2 still swaps the rule slice, but neither changes routing decisions in that mode; the panel's route test follows the script because it calls `PickRoute`. The script's `xray.router.PickOutbound` calls `Balancer.PickOutbound`, so panel overrides still apply to balancers picked from Lua. Upstream supplies none of P1–P4, so they stay `local-only`; no code change was made.
 
 Upstream overlap signals to watch: new RoutingService methods for balancer listing or rule updates (P1, P2), an ObservatoryService method for on-demand checks or per-sample results (P3), and changes to `app/metrics.httpHandler` (P4 mount conflict).
 
 ## Verification at current baseline
+
+Rebased on 2026-10-22 onto `main@1b1647cd` without conflicts; `git range-diff` shows the three commits (now `c593eaac`, `77c93fe2`, `c9af85f4`) patch-identical. The 13 upstream commits do not touch `app/router`, `app/metrics`, `app/observatory`, or `app/panel`. Each commit passed `go build ./...` and `go vet` for the panel packages that exist at that commit; `go test ./app/panel ./app/metrics ./app/observatory/burst`, `go test ./app/router -skip TestChinaSites`, and the race tests below passed on the new tip using Go 1.27.2 on macOS arm64. The smoke test was not repeated.
 
 Rebased on 2026-10-19 from `local/direct-echo` onto `main@92ccc939` without conflicts; `git range-diff` shows the three commits patch-identical. Each commit passed `go build ./...` and `go vet` for the panel, metrics, router, and burst packages that exist at that commit; the package tests and race tests below passed on the new tip.
 
