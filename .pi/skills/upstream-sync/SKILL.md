@@ -18,14 +18,16 @@ upstream/main
     ├── local/tun-carrier-policy
     │   └── local/route-exclusions
     │       └── local/direct-echo
-    └── local/panel
+    ├── local/panel
+    ├── fix/xhttp-h3-dial-leak
+    └── fix/tun-udp-self-loop
 
-dev = --no-ff merge of local/direct-echo and local/panel, then maintenance documentation
+dev = --no-ff merge of local/direct-echo, local/panel, and the fix/* branches, then maintenance documentation
 ```
 
-`main` is a clean upstream mirror. The TUN topics form a stacked patch queue; `local/panel` is an independent topic on `main`. `dev` is the validated integration branch: a `--no-ff` merge of `local/direct-echo` and `local/panel`, followed by the maintenance documentation commits.
+`main` is a clean upstream mirror. The TUN topics form a stacked patch queue; `local/panel` and each `fix/*` branch are independent topics on `main`. The `fix/*` branches hold bug fixes that upstream lacks, kept until upstream fixes the bug. `dev` is the validated integration branch: a `--no-ff` merge of `local/direct-echo`, `local/panel`, and the `fix/*` branches, followed by the maintenance documentation commits.
 
-Read `docs/local-patches/tun-network-path-safety.md` and `docs/local-patches/balancer-panel.md` before changing refs. Treat their behavior units and upstream statuses as the source of truth for what local functionality must remain.
+Read `docs/local-patches/tun-network-path-safety.md`, `docs/local-patches/balancer-panel.md`, and `docs/local-patches/upstream-bug-fixes.md` before changing refs. Treat their behavior units and upstream statuses as the source of truth for what local functionality must remain.
 
 ## Safety boundaries
 
@@ -130,10 +132,11 @@ Rebase or rebuild topics in this order:
 2. `local/route-exclusions`
 3. `local/direct-echo`
 4. `local/panel`
+5. each `fix/*` branch
 
-`local/tun-carrier-policy` and `local/panel` rebase onto `upstream/main`; `local/route-exclusions` and `local/direct-echo` rebase onto their newly validated parent topic. Use temporary topic refs while working when existing topic branches must remain stable.
+`local/tun-carrier-policy`, `local/panel`, and the `fix/*` branches rebase onto `upstream/main`; `local/route-exclusions` and `local/direct-echo` rebase onto their newly validated parent topic. Use temporary topic refs while working when existing topic branches must remain stable.
 
-Then rebuild `dev`: create a `--no-ff` merge of the new `local/direct-echo` and `local/panel` tips, and cherry-pick the maintenance documentation commits that followed the previous merge commit onto it. Code changes never live in `dev` itself.
+Then rebuild `dev`: create a `--no-ff` merge of the new `local/direct-echo`, `local/panel`, and `fix/*` tips, and cherry-pick the maintenance documentation commits that followed the previous merge commit onto it. Code changes never live in `dev` itself.
 
 For each topic:
 
@@ -172,6 +175,8 @@ go test -race ./transport/internet ./features/dns/localdns ./proxy/tun
 go test ./app/panel ./app/metrics ./app/observatory/burst
 go test ./app/router -skip TestChinaSites
 go test -race ./app/panel ./app/router -run 'Panel|ListBalancers|SetRuleBalancer'
+go test -race ./proxy/freedom ./transport/internet/splithttp
+go run ./infra/vprotogen/main.go -mode check -pwd ./
 ```
 
 Compare the old and new patch queues:
