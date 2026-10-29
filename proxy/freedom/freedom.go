@@ -207,6 +207,21 @@ func (h *Handler) Init(config *Config, pm policy.Manager) error {
 	return nil
 }
 
+// sharesPortWithTunSource reports whether a UDP socket got the port of the TUN
+// flow it serves, which happens when the app has released that port just
+// before. The source of a TUN flow is an address of this host, so the replies
+// written back to the TUN are delivered to this unconnected socket itself and
+// forwarded again, in a loop that also keeps the flow from ever going idle.
+// Binding the socket to the outbound interface does not prevent this on every
+// system.
+func sharesPortWithTunSource(inbound *session.Inbound, conn net.Conn) bool {
+	if inbound == nil || inbound.Name != "tun" || inbound.Source.Network != net.Network_UDP {
+		return false
+	}
+	local, ok := conn.LocalAddr().(*net.UDPAddr)
+	return ok && local.Port == int(inbound.Source.Port)
+}
+
 func (h *Handler) policy() policy.Session {
 	p := h.policyManager.ForLevel(h.config.UserLevel)
 	return p
@@ -344,6 +359,10 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		rawConn, err := dialer.Dial(ctx, destination)
 		if err != nil {
 			return err
+		}
+		if destination.Network == net.Network_UDP && sharesPortWithTunSource(inbound, rawConn) {
+			rawConn.Close()
+			return errors.New("UDP socket took the port of its TUN source ", inbound.Source, ", redialing")
 		}
 
 		conn = rawConn
