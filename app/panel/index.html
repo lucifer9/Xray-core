@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Xray 面板</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --fg: #1d2129; --muted: #6b7280; --line: #e5e7eb;
+    --accent: #2563eb; --accent-soft: #e0e9ff;
+    --good: #16a34a; --warn: #d97706; --bad: #dc2626; --idle: #9ca3af;
+    --alert-bg: #fff7ed; --alert-line: #fdba74; --err-bg: #fef2f2; --err-line: #fca5a5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111318; --card: #1a1d24; --fg: #e5e7eb; --muted: #9aa1ad; --line: #2b303a;
+      --accent: #6b9bff; --accent-soft: #1f2b46;
+      --good: #34c46b; --warn: #f0a63a; --bad: #f26d6d; --idle: #6b7280;
+      --alert-bg: #2a2115; --alert-line: #7c5a26; --err-bg: #2b1719; --err-line: #7a2f33;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 48px; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  header h1 { font-size: 20px; margin: 0; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  header .tools { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  section { margin-top: 20px; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 12px; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--fg);
+    border-radius: 6px; padding: 4px 10px; cursor: pointer; white-space: nowrap; }
+  button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover:not(:disabled) { color: #fff; filter: brightness(1.08); }
+  input, select { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 8px; }
+
+  .alerts { display: grid; gap: 8px; }
+  .alert { border: 1px solid var(--alert-line); background: var(--alert-bg); border-radius: 8px; padding: 8px 12px; }
+  .alert.error { border-color: var(--err-line); background: var(--err-bg); }
+  .alert b { margin-right: 6px; }
+
+  .route { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 16px; }
+  .route .arrow { color: var(--muted); }
+  .chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 2px 12px;
+    background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .chip.plain { background: transparent; border: 1px solid var(--line); color: var(--fg); font-weight: 500; }
+  .groups { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .groups button { min-width: 64px; }
+  .groups button.active { background: var(--accent); border-color: var(--accent); color: #fff; opacity: 1; }
+
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); }
+  .bal-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+  .bal-head .name { font-size: 16px; font-weight: 700; }
+  .bal-head .spacer { flex: 1; }
+  .badge { font-size: 11px; border-radius: 4px; padding: 1px 6px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .badge.accent { border-color: var(--accent); color: var(--accent); }
+  .badge.solid { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .bal-mode { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; }
+  .nodes { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+  .node { display: grid; grid-template-columns: 12px minmax(7em, 1fr) auto auto; align-items: center; gap: 10px;
+    padding: 7px 0; border-bottom: 1px solid var(--line); }
+  .node:last-child { border-bottom: 0; }
+  .node.effective .tag { font-weight: 700; }
+  .node .tag { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; white-space: nowrap; }
+  .node .stats { text-align: right; }
+  .node .actions { display: flex; gap: 6px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--idle); }
+  .dot.good { background: var(--good); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+  .delay { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .delay.good { color: var(--good); } .delay.warn { color: var(--warn); } .delay.bad { color: var(--bad); }
+
+  form.test { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  form.test input[name=target] { width: 260px; }
+  .test-result { margin-top: 10px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  tr:last-child td { border-bottom: 0; }
+  details summary { cursor: pointer; font-weight: 600; font-size: 15px; }
+
+  #toast { position: fixed; right: 16px; bottom: 16px; max-width: 420px; display: none;
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.15); }
+  #toast.error { border-color: var(--err-line); background: var(--err-bg); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Xray 面板</h1>
+    <span class="meta">内置于 Xray · metrics</span>
+    <div class="tools">
+      <span class="small muted" id="updated"></span>
+      <label class="small"><input type="checkbox" id="auto" checked> 每 5 秒刷新</label>
+      <button id="refresh">刷新</button>
+    </div>
+  </header>
+
+  <div class="alerts" id="alerts"></div>
+
+  <section>
+    <h2>当前出口</h2>
+    <div class="card" id="exits"></div>
+  </section>
+
+  <section>
+    <h2>负载均衡组</h2>
+    <div class="grid" id="balancers"></div>
+  </section>
+
+  <section>
+    <h2>路由测试</h2>
+    <div class="card">
+      <form class="test" id="test">
+        <input name="target" placeholder="域名或 IP:端口，如 www.google.com:443" required>
+        <select name="network"><option>tcp</option><option>udp</option></select>
+        <input name="inbound" list="inbounds" placeholder="inbound（可选）">
+        <datalist id="inbounds"></datalist>
+        <button class="primary">测试</button>
+      </form>
+      <div class="test-result" id="test-result"></div>
+    </div>
+  </section>
+
+  <section>
+    <details class="card">
+      <summary>路由规则 <span class="small muted" id="rules-count"></span></summary>
+      <div id="rules" style="margin-top:10px"></div>
+    </details>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+const REFRESH_MS = 5000;
+const $ = sel => document.querySelector(sel);
+let state = null;
+let busy = false;
+let timer = null;
+// Tags with a probe in flight, and the result of the last manual probe per tag.
+const checking = new Set();
+const manual = {};
+
+// Small DOM builder; text always goes through textContent.
+function el(tag, attrs, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
+    else if (k === 'class') node.className = v;
+    else node.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of children.flat()) {
+    if (c == null || c === false) continue;
+    node.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return node;
+}
+
+// Paths are relative so the page works under any mount point (/panel/).
+async function api(path, body) {
+  const opt = body === undefined ? {} : {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+  };
+  const res = await fetch(path, opt);
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { throw new Error(`HTTP ${res.status}: ${text}`); }
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+function toast(msg, isError) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.className = isError ? 'error' : '';
+  t.style.display = 'block';
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => { t.style.display = 'none'; }, isError ? 10000 : 2500);
+}
+
+function level(alive, ms) {
+  if (!alive) return 'bad';
+  if (ms < 800) return 'good';
+  if (ms < 2000) return 'warn';
+  return 'bad';
+}
+
+function delayLevel(s) { return s ? level(s.alive, s.delay) : ''; }
+function delayText(s) { return !s ? '—' : s.alive ? `${s.delay} ms` : '不可用'; }
+function sampleText(x) { return x.failed ? '失败' : `${x.ms} ms`; }
+
+const usedNode = b => b.override || b.principle[0] || '';
+const exitRules = () => state.rules.filter(r => r.balancer);
+const balancerByTag = tag => state.balancers.find(b => b.tag === tag);
+
+async function act(label, path, body) {
+  if (busy) return;
+  busy = true;
+  render();
+  try {
+    await api(path, body);
+    toast(label);
+  } catch (e) {
+    toast(`${label}失败：${e.message}`, true);
+  } finally {
+    busy = false;
+    await refresh();
+  }
+}
+
+const setRule = (rule, bal) => act(`${rule} 已切换到 ${bal}`, 'api/rule', {ruleTag: rule, balancer: bal});
+const setOverride = (bal, target) => act(
+  target ? `${bal} 已固定到 ${target}` : `${bal} 已恢复自动选择`,
+  'api/override', {balancer: bal, target});
+
+async function check(tags) {
+  tags = tags.filter(t => !checking.has(t));
+  if (!tags.length) return;
+  tags.forEach(t => checking.add(t));
+  render();
+  try {
+    const res = await api('api/check', {tags});
+    for (const t of tags) manual[t] = res[t] || {skipped: true};
+  } catch (e) {
+    toast(`测速失败：${e.message}`, true);
+  } finally {
+    tags.forEach(t => checking.delete(t));
+    await refresh();
+  }
+}
+
+function renderAlerts() {
+  const box = $('#alerts');
+  box.replaceChildren();
+  if (state.fetchError) {
+    box.append(el('div', {class: 'alert error'}, el('b', {}, '面板不可达'), state.fetchError));
+  } else if (state.observatoryError) {
+    box.append(el('div', {class: 'alert'}, el('b', {}, '观测数据'), state.observatoryError));
+  }
+}
+
+function renderExits() {
+  const box = $('#exits');
+  box.replaceChildren();
+  const rules = exitRules();
+  if (!rules.length) {
+    box.append(el('span', {class: 'muted'}, '没有指向负载均衡组的路由规则。'));
+    return;
+  }
+  const obs = state.observatory || {};
+  for (const r of rules) {
+    const b = balancerByTag(r.balancer);
+    const node = b ? usedNode(b) : '';
+    const s = obs[node];
+    box.append(el('div', {class: 'route'},
+      el('span', {class: 'chip plain mono'}, r.ruleTag || '（无 ruleTag）'),
+      el('span', {class: 'arrow'}, '→'),
+      el('span', {class: 'chip'}, r.balancer),
+      el('span', {class: 'arrow'}, '→'),
+      node ? el('span', {class: 'chip plain'}, node) : el('span', {class: 'muted'}, '无可用节点，走 fallbackTag'),
+      s ? el('span', {class: `delay ${delayLevel(s)}`}, delayText(s)) : null,
+    ));
+    if (!r.ruleTag) {
+      box.append(el('p', {class: 'small muted'}, '这条规则没有 ruleTag，无法切换。'));
+      continue;
+    }
+    box.append(el('div', {class: 'groups'}, state.balancers.map(g => {
+      const active = g.tag === r.balancer;
+      return el('button', {
+        class: active ? 'active' : '', disabled: busy || active,
+        title: `将 ${r.ruleTag} 规则切到 ${g.tag}`,
+        onclick: () => setRule(r.ruleTag, g.tag),
+      }, g.tag);
+    })));
+  }
+}
+
+function renderBalancer(b) {
+  const obs = state.observatory || {};
+  const exits = exitRules();
+  const usedBy = exits.filter(r => r.balancer === b.tag).map(r => r.ruleTag || '（无 ruleTag）');
+  const auto = b.principle[0] || '';
+  const effective = usedNode(b);
+  const tags = [...b.candidates];
+  if (b.override && !tags.includes(b.override)) tags.push(b.override);
+  const observed = tags.filter(t => obs[t]);
+  const canSwitch = exits.length === 1 && exits[0].ruleTag;
+
+  const head = el('div', {class: 'bal-head'},
+    el('span', {class: 'name'}, b.tag),
+    el('span', {class: 'badge'}, b.strategy),
+    el('span', {class: 'badge mono', title: 'selector（前缀匹配）'}, b.selectors.join(', ')),
+    b.fallbackTag ? el('span', {class: 'badge', title: '全部不可用时使用'}, `fallback: ${b.fallbackTag}`) : null,
+    el('span', {class: 'spacer'}),
+    state.canCheck && observed.length ? el('button', {
+      disabled: observed.every(t => checking.has(t)), onclick: () => check(observed),
+    }, observed.some(t => checking.has(t)) ? '测速中…' : '测速') : null,
+    usedBy.length ? el('span', {class: 'badge solid'}, `出口：${usedBy.join(', ')}`)
+      : canSwitch ? el('button', {disabled: busy, onclick: () => setRule(exits[0].ruleTag, b.tag)}, '设为出口') : null,
+  );
+
+  const mode = el('div', {class: 'bal-mode'});
+  if (b.override) {
+    mode.append(el('span', {}, '手动固定：', el('b', {}, b.override)),
+      el('button', {disabled: busy, onclick: () => setOverride(b.tag, '')}, '恢复自动'));
+  } else {
+    mode.append(el('span', {class: 'muted'}, `自动选择（${b.strategy}）`));
+  }
+
+  const list = el('ul', {class: 'nodes'});
+  for (const tag of tags) {
+    const s = obs[tag];
+    const lvl = delayLevel(s);
+    const m = manual[tag];
+    const details = [];
+    if (s?.hasPing && s.pingAll) {
+      details.push(`avg ${s.pingAvgMs} / min ${s.pingMinMs} / max ${s.pingMaxMs} ms · 失败 ${s.pingFail}/${s.pingAll}`);
+    }
+    if (s?.latest) {
+      details.push(`最近一次 ${sampleText(s.latest)} @ ${new Date(s.latest.at).toLocaleTimeString()}`);
+    }
+    let manualText = null;
+    if (m?.skipped) manualText = el('div', {class: 'small muted'}, '手动测速未记录（本地网络不可用）');
+    else if (m) manualText = el('div', {class: `small delay ${level(!m.failed, m.ms)}`}, `手动测速：${sampleText(m)}`);
+    list.append(el('li', {class: `node${tag === effective ? ' effective' : ''}`, title: s?.lastError || null},
+      el('span', {class: `dot ${lvl}`}),
+      el('span', {class: 'tag'}, tag,
+        tag === effective ? el('span', {class: 'badge solid'}, '使用中') : null,
+        b.override && tag === auto ? el('span', {class: 'badge accent'}, '自动最优') : null,
+        !s ? el('span', {class: 'badge', title: 'leastPing / leastLoad 会忽略未观测的节点'}, '未观测') : null),
+      el('span', {class: 'stats'},
+        el('div', {class: `delay ${lvl}`}, delayText(s)),
+        details.map(d => el('div', {class: 'small muted'}, d)),
+        manualText),
+      el('span', {class: 'actions'},
+        state.canCheck && s ? el('button', {disabled: checking.has(tag), onclick: () => check([tag])},
+          checking.has(tag) ? '测速中…' : '测速') : null,
+        el('button', {
+          disabled: busy || tag === b.override,
+          title: `强制 ${b.tag} 使用 ${tag}`,
+          onclick: () => setOverride(b.tag, tag),
+        }, '固定')),
+    ));
+  }
+  if (!tags.length) list.append(el('li', {class: 'node muted'}, '没有匹配 selector 的出站'));
+
+  return el('div', {class: 'card'}, head, mode, list);
+}
+
+function renderRules() {
+  const box = $('#rules');
+  $('#rules-count').textContent = `(${state.rules.length})`;
+  const rows = state.rules.map((r, i) => el('tr', {},
+    el('td', {class: 'muted'}, i + 1),
+    el('td', {class: 'mono'}, r.ruleTag || '—'),
+    el('td', {class: 'mono'}, r.balancer ? `balancer: ${r.balancer}` : r.outbound)));
+  box.replaceChildren(el('table', {},
+    el('thead', {}, el('tr', {}, el('th', {}, '#'), el('th', {}, 'ruleTag'), el('th', {}, '出站'))),
+    el('tbody', {}, rows)));
+}
+
+function render() {
+  if (!state) return;
+  $('#updated').textContent = state.time ? `更新于 ${new Date(state.time * 1000).toLocaleTimeString()}` : '';
+  renderAlerts();
+  if (state.fetchError) return;
+  renderExits();
+  $('#balancers').replaceChildren(...state.balancers.map(renderBalancer));
+  renderRules();
+  $('#inbounds').replaceChildren(...state.inbounds.map(t => el('option', {value: t})));
+}
+
+async function refresh() {
+  try {
+    state = await api('api/status');
+  } catch (e) {
+    state = {...(state || {}), fetchError: e.message};
+  }
+  render();
+}
+
+function schedule() {
+  clearInterval(timer);
+  if ($('#auto').checked) timer = setInterval(() => { if (!busy && !document.hidden) refresh(); }, REFRESH_MS);
+}
+
+$('#refresh').addEventListener('click', refresh);
+$('#auto').addEventListener('change', schedule);
+$('#test').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  let target = f.get('target').trim();
+  // Default to 443 when the port is omitted; bracket bare IPv6 addresses.
+  const hasPort = /^\[.+\]:\d+$/.test(target) || /^[^:]+:\d+$/.test(target);
+  if (!hasPort) {
+    target = target.includes(':') ? `[${target.replace(/^\[|\]$/g, '')}]:443` : `${target}:443`;
+  }
+  const out = $('#test-result');
+  out.replaceChildren(el('span', {class: 'muted'}, `测试 ${target} …`));
+  try {
+    const r = await api('api/route', {target, network: f.get('network'), inbound: f.get('inbound')});
+    out.replaceChildren(el('div', {class: 'route'},
+      el('span', {class: 'chip plain mono'}, target),
+      el('span', {class: 'arrow'}, '→'),
+      el('span', {class: 'chip plain mono', title: '命中的规则'}, r.ruleTag || '（无 ruleTag）'),
+      el('span', {class: 'arrow'}, '→'),
+      el('span', {class: 'chip'}, r.outbound || '（默认出站）')));
+  } catch (e) {
+    out.replaceChildren(el('div', {class: 'alert error'}, e.message));
+  }
+});
+
+refresh();
+schedule();
+</script>
+</body>
+</html>

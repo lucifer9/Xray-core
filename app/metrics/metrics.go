@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/xtls/xray-core/app/observatory"
+	"github.com/xtls/xray-core/app/panel"
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
 	xnet "github.com/xtls/xray-core/common/net"
@@ -140,6 +141,11 @@ func (p *MetricsHandler) httpHandler() http.Handler {
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	if panelHandler, err := panel.New(p.ctx); err != nil {
+		errors.LogWarningInner(context.Background(), err, "metrics: panel disabled")
+	} else {
+		mux.Handle("/panel/", http.StripPrefix("/panel", panelHandler))
+	}
 	return mux
 }
 
