@@ -4,9 +4,9 @@ This file tracks the local web panel for inspecting and switching balancers. It 
 
 ## Patch stack
 
-Checked against: `main@1b1647cd9ddf0abc34b981d4611fc03bcac1ca74` (equal to `upstream/main` at sync time).
+Checked against: `main@2dfee4b8424d814f39407de2c95969a72df519c7` (equal to `upstream/main` at sync time).
 
-`local/panel` is based directly on `main` and does not depend on any TUN behavior; `dev` merges it with `local/direct-echo`.
+`local/panel` is based directly on `main` and does not depend on any TUN behavior; `dev` merges it with `local/direct-echo` and the `fix/*` branches.
 
 ## Configuration contract
 
@@ -32,6 +32,8 @@ Interaction with upstream Lua routing (`8855145e`, checked 2026-10-11): when `ro
 Upstream overlap signals to watch: new RoutingService methods for balancer listing or rule updates (P1, P2), an ObservatoryService method for on-demand checks or per-sample results (P3), and changes to `app/metrics.httpHandler` (P4 mount conflict).
 
 ## Verification at current baseline
+
+Rebased on 2026-10-29 onto `main@2dfee4b8` without conflicts; `git range-diff` shows the three commits (now `da0933aa`, `4f3f086e`, `1b43460f`) patch-identical. Of the 17 upstream commits, only `78b5a6ec` touches these areas: it reflows comments in `app/router/command/command.proto` and regenerates `app/observatory/config.pb.go`, adding no RoutingService or ObservatoryService method and leaving `app/metrics.httpHandler` unchanged, so P1–P4 stay `local-only`. Each commit passed `go build ./...` and `go vet` for the panel packages that exist at that commit; `go test ./app/panel ./app/metrics ./app/observatory/burst`, `go test ./app/router -skip TestChinaSites`, and the race tests below passed on the new tip and on the integration tree using Go 1.27.3 on macOS arm64. The smoke test was not repeated.
 
 Rebased on 2026-10-22 onto `main@1b1647cd` without conflicts; `git range-diff` shows the three commits (now `c593eaac`, `77c93fe2`, `c9af85f4`) patch-identical. The 13 upstream commits do not touch `app/router`, `app/metrics`, `app/observatory`, or `app/panel`. Each commit passed `go build ./...` and `go vet` for the panel packages that exist at that commit; `go test ./app/panel ./app/metrics ./app/observatory/burst`, `go test ./app/router -skip TestChinaSites`, and the race tests below passed on the new tip using Go 1.27.2 on macOS arm64. The smoke test was not repeated.
 

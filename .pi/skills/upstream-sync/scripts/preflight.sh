@@ -46,6 +46,8 @@ for branch in \
   local/route-exclusions \
   local/direct-echo \
   local/panel \
+  fix/xhttp-h3-dial-leak \
+  fix/tun-udp-self-loop \
   dev \
   main; do
   if git show-ref --verify --quiet "refs/heads/$branch"; then
