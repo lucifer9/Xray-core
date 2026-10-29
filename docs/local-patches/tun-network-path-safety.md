@@ -4,18 +4,18 @@ This file tracks the behavior that remains local relative to the checked upstrea
 
 ## Patch stack
 
-Checked against: `main@2dfee4b8424d814f39407de2c95969a72df519c7` (equal to `upstream/main` at sync time).
+Checked against: `main@0afec66085a85191e9dd2a4a6646c7c9a94688d1` (equal to `upstream/main` at sync time).
 
 The clone now has an `upstream` remote, and `main` mirrors `upstream/main`. The 2026-09-29 and 2026-09-30 synchronizations used the existing `main` without fetching, moving `main`, or pushing.
 
 ```text
-main 2dfee4b8
-├── local/tun-carrier-policy  412f8875
-│   └── local/route-exclusions  a26699ef
-│       └── local/direct-echo  14acb343
-├── local/panel  1b43460f  (see balancer-panel.md)
-├── fix/xhttp-h3-dial-leak  b46b2c94  (see upstream-bug-fixes.md)
-└── fix/tun-udp-self-loop  40b0a0e1  (see upstream-bug-fixes.md)
+main 0afec660
+├── local/tun-carrier-policy  65b24c9e
+│   └── local/route-exclusions  cbbb503c
+│       └── local/direct-echo  5dcbceb6
+├── local/panel  2028b710  (see balancer-panel.md)
+├── fix/xhttp-h3-dial-leak  df7f43b8  (see upstream-bug-fixes.md)
+└── fix/tun-udp-self-loop  a0ad53d6  (see upstream-bug-fixes.md)
 
 dev = --no-ff merge of local/direct-echo, local/panel, and the fix/* branches, then maintenance documentation
 ```
@@ -35,7 +35,7 @@ Before the 2026-09-29 synchronization, the base was `e5e85ca9` and the integrati
 
 ## Behavior units
 
-All rows below are checked against `main@2dfee4b8`. Verification and platform limitations are recorded below the table. No complete local commit was absorbed or dropped; units 01, 02 and 10 shrank to residual deltas (see the 2026-10-19 integration decisions), unit 01 shrank again on 2026-10-22, and unit 04 shrank on 2026-10-29.
+All rows below are checked against `main@0afec660`. Verification and platform limitations are recorded below the table. No complete local commit was absorbed or dropped; units 01, 02 and 10 shrank to residual deltas (see the 2026-10-19 integration decisions), unit 01 shrank again on 2026-10-22, and unit 04 shrank on 2026-10-29.
 
 | Issue | Behavior unit | Local branch | Local commit | Upstream status | Upstream commits | Residual delta |
 |---|---|---|---|---|---|---|
@@ -56,7 +56,24 @@ All rows below are checked against `main@2dfee4b8`. Verification and platform li
 | 15 | FreeBSD carrier policy integration | `local/tun-carrier-policy` | `9a3ff492` | `partial` | `c1958dba`, `1dd2a0bd` | Retain upstream escape FIB implementation and system DNS takeover; connect it to the lifecycle owner, publish per-family carriers only after successful FIB synchronization, invalidate carriers on synchronization failure, and wait for monitor shutdown using a pollable descriptor |
 | 16 | FreeBSD Excluded route prefixes | `local/route-exclusions` | `120a5a13` | `local-only` | — | Apply the common planner after upstream protected-default expansion, validate before interface creation, and propagate route rollback failures |
 
-## 2026-10-29 integration decisions
+## 2026-10-29 integration decisions (`main@0afec660`)
+
+`main` advanced from `2dfee4b8` to `0afec660` with 2 commits. No local commit was absorbed or dropped, and no behavior unit changed. The old integration tip was `f9d596a3`, and the old topic tips were `412f8875`, `a26699ef`, `14acb343`, `1b43460f`, `b46b2c94`, and `40b0a0e1`. The operator had fast-forwarded `main` and pushed it to `origin/main` before the sync. The `backup/*-before-sync-20261029-174338` and `backup/dev-before-upstream-sync-20261029-174338` refs are kept until the operator accepts the sync. No remote refs were changed by the sync.
+
+- `55eecaed` moves `proxyman.InboundConfig` to the end of `config.App` in `infra/conf`, so the inbound manager is created after the router, DNS, observatory, and metrics apps. No local code looks up a feature while apps are created; the only local `inbound.Manager` lookup is in `panel.New`, which `MetricsHandler.Start` calls after every feature is registered. The TUN topics do not touch `infra/conf/xray.go`, and `go test ./infra/conf` passes with upstream's updated `TestXrayConfig`.
+- `0afec660` only bumps the version in `core/core.go`.
+- All topics rebased without conflicts, and `git range-diff` shows every commit patch-identical. The code tree of the new integration tip differs from the old one only in the three upstream files.
+
+## Verification at current baseline
+
+Validated on 2026-10-29 against `main@0afec660` using Go 1.27.3 on macOS arm64.
+
+- Each topic tip passed `go build ./...`.
+- The integration tree passed `go test` and `go test -race` for `./transport/internet ./features/dns/localdns ./proxy/tun/...`, `./infra/conf -run '^TestTunConfig'`, `./proxy/freedom`, and `./transport/internet/splithttp`, plus `go test` for all of `infra/conf`, `core`, `proxy/wireguard`, `proxy/masque`, and `app/proxyman/outbound`. `vprotogen -mode check`, `vformat -mode check`, and `git diff --check` passed.
+- Darwin arm64, Linux arm64/amd64, Windows amd64, and FreeBSD amd64 application builds passed, and the affected-package test binaries, including `infra/conf`, compiled/linked for each with `-exec=/usr/bin/true`. Linux, Windows, and FreeBSD vet passed for `transport/internet`, `features/dns/localdns`, and `proxy/tun/...`. Android test binaries compiled/linked except `infra/conf`, which was not tried (known `wlynxg/anet` link failure); iOS arm64 `proxy/tun` compiled/linked with `CGO_ENABLED=1`.
+- Linux privileged tests through `orb`, Windows/FreeBSD runtime behavior, Android/iOS execution, and privileged macOS TUN end-to-end behavior were not run in this sync.
+
+## 2026-10-29 integration decisions (`main@2dfee4b8`)
 
 `main` advanced from `1b1647cd` to `2dfee4b8` with 17 commits. No complete local commit was absorbed or dropped; unit 04 shrank. The old integration tip was `78783dc5`, and the old topic tips were `9a3ff492`, `120a5a13`, `66db7097`, and `c9af85f4`. The sync was accepted and its `backup/*-before-sync-20261029-151049` and `backup/dev-before-upstream-sync-20261029-151049` refs were removed. `main` was fast-forwarded and pushed to `origin/main` before the sync; after it, the rewritten `dev` and `local/*` branches were force-pushed to `origin` with leases on their old tips, and the `fix/*` branches were pushed. All of this was at the operator's request.
 
@@ -67,7 +84,7 @@ All rows below are checked against `main@2dfee4b8`. Verification and platform li
 - `git range-diff` shows the carrier-policy commit changed as described above. The route-exclusion commit no longer changes `config.pb.go`'s header and import grouping, which now match upstream's generator; its other differences are context. The Direct Echo commit differs only around the removed Darwin test.
 - `dev` now also merges `fix/xhttp-h3-dial-leak` and `fix/tun-udp-self-loop`; see `upstream-bug-fixes.md`.
 
-## Verification at current baseline
+## Verification at 2026-10-29 baseline (`main@2dfee4b8`)
 
 Validated on 2026-10-29 against `main@2dfee4b8` using Go 1.27.3 on macOS arm64.
 
