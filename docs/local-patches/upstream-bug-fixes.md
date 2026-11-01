@@ -4,7 +4,7 @@ This file tracks fixes for upstream bugs that upstream has not fixed yet. It use
 
 ## Patch stack
 
-Checked against: `main@0afec66085a85191e9dd2a4a6646c7c9a94688d1` (equal to `upstream/main` at sync time).
+Checked against: `main@a4a3dff5b20c2faae567b742c172c7b95e75c083` (equal to `upstream/main` at sync time).
 
 Each fix is an independent branch on `main`; `dev` merges them together with `local/direct-echo` and `local/panel`.
 
@@ -12,8 +12,8 @@ Each fix is an independent branch on `main`; `dev` merges them together with `lo
 
 | Issue | Behavior unit | Local branch | Local commit | Upstream status | Residual delta |
 |---|---|---|---|---|---|
-| F1 | XHTTP/3 failed dial releases its QUIC transport | `fix/xhttp-h3-dial-leak` | `df7f43b8` | `local-only` | `transport/internet/splithttp/dialer.go` closes the `quic.Transport` and its UDP socket when `DialEarly` fails. Upstream returns without closing them, so every failed handshake leaks a socket and the transport's `listen` and `runSendQueue` goroutines. The XDRIVE, MASQUE, and Hysteria dialers already clean up on this path |
-| F2 | Freedom UDP socket never shares the port of its TUN source | `fix/tun-udp-self-loop` | `a0ad53d6` | `local-only` | `proxy/freedom/freedom.go` closes and redials a UDP socket whose local port equals the source port of the TUN flow it serves. The flow's source is an address of this host, so otherwise the replies written back to the TUN reach the unconnected socket itself and are forwarded again without end, which pins the CPU and keeps the flow from going idle |
+| F1 | XHTTP/3 failed dial releases its QUIC transport | `fix/xhttp-h3-dial-leak` | `78560042` | `local-only` | `transport/internet/splithttp/dialer.go` closes the `quic.Transport` and its UDP socket when `DialEarly` fails. Upstream returns without closing them, so every failed handshake leaks a socket and the transport's `listen` and `runSendQueue` goroutines. The XDRIVE, MASQUE, and Hysteria dialers already clean up on this path |
+| F2 | Freedom UDP socket never shares the port of its TUN source | `fix/tun-udp-self-loop` | `513477c1` | `local-only` | `proxy/freedom/freedom.go` closes and redials a UDP socket whose local port equals the source port of the TUN flow it serves. The flow's source is an address of this host, so otherwise the replies written back to the TUN reach the unconnected socket itself and are forwarded again without end, which pins the CPU and keeps the flow from going idle |
 
 ## Background
 
@@ -27,6 +27,14 @@ F2 is not limited to Darwin. On Linux, the TUN's `autoOutboundsInterface` binds 
 Upstream overlap signals to watch: changes to the `DialEarly` error path in `transport/internet/splithttp/dialer.go` (F1), and any upstream handling of the freedom socket port or of TUN replies addressed to Xray's own sockets (F2). On 2026-10-29 a search of XTLS/Xray-core issues and pull requests found neither bug; related but different issues are #7160 (an unbound dial looping into the TUN), #6328 (H3 ports kept on XMUX rotation, fixed), and #5956 (splithttp reconnect leaks, not merged). apernet/quic-go has issues disabled and no related pull request; the transport's lifetime belongs to its caller.
 
 ## Verification at current baseline
+
+Rebased on 2026-11-01 onto `main@a4a3dff5` without conflicts; `git range-diff` shows both fixes (`78560042`, `513477c1`) patch-identical. F1 and F2 remain `local-only`, with unchanged residual deltas. Upstream commits fixing either behavior: none. XHTTP server commits `316e07a5` and `e7a69fa8` leave the outbound `DialEarly` failure path unchanged; `d1140de2` only changes freedom's generated header, and `6cdd323a`'s Windows WFP port filters do not prevent socket/TUN source-port collision on Darwin or other receiving paths described above.
+
+Each fix tip passed `go build ./...` and its package tests. Integration `go test -race ./proxy/freedom ./transport/internet/splithttp` passed with Go 1.27.3 on macOS arm64, including `TestH3DialFailureReleasesTransport` and `TestUDPRedialsWhenSocketTakesTunSourcePort`; the H3 regression also passed explicitly with verbose output. Test binaries for both packages compiled/linked for Darwin arm64, Linux arm64/amd64, Windows amd64, and FreeBSD amd64. Full splithttp vet reports protobuf-message copylocks warnings identical to untouched upstream; its other analyzers passed with `-copylocks=false`, and freedom vet passed without exclusions. The tests were not rerun without the fixes, and the live process was not rebuilt or restarted.
+
+Static inspection also found an independent upstream server startup cleanup risk in `316e07a5`: malformed `h2Params` can return after listener creation without an explicit close. This was not runtime-reproduced or added to the local fix queue in this sync; it is not evidence that F1 has been absorbed.
+
+## Earlier verification
 
 Rebased on 2026-10-29 onto `main@0afec660` without conflicts; `git range-diff` shows both fix commits (now `df7f43b8`, `a0ad53d6`) patch-identical. The two upstream commits touch only `infra/conf/xray.go`, its test, and `core/core.go`, so F1 and F2 stay `local-only`. `go test ./proxy/freedom` passed on `fix/tun-udp-self-loop`, `go test ./transport/internet/splithttp` passed on `fix/xhttp-h3-dial-leak`, and `go test` and `go test -race` for both packages passed on the integration tree using Go 1.27.3 on macOS arm64. The tests were not rerun without the fixes.
 

@@ -4,7 +4,7 @@ This file tracks the local web panel for inspecting and switching balancers. It 
 
 ## Patch stack
 
-Checked against: `main@0afec66085a85191e9dd2a4a6646c7c9a94688d1` (equal to `upstream/main` at sync time).
+Checked against: `main@a4a3dff5b20c2faae567b742c172c7b95e75c083` (equal to `upstream/main` at sync time).
 
 `local/panel` is based directly on `main` and does not depend on any TUN behavior; `dev` merges it with `local/direct-echo` and the `fix/*` branches.
 
@@ -22,16 +22,22 @@ The panel is disabled with a warning when the instance does not use the built-in
 
 | Issue | Behavior unit | Local commit | Upstream status | Residual delta |
 |---|---|---|---|---|
-| P1 | Router inspection | `c593eaac` | `local-only` | `Router.ListBalancers` (selectors, strategy, fallback, candidates, override, principle) and `Router.ListRuleTargets` (rule to outbound or balancer tag); upstream `ListRule` omits balancer tags and there is no balancer listing |
-| P2 | Atomic rule balancer switch | `c593eaac` | `local-only` | `Router.SetRuleBalancer` swaps the rule slice under the router mutex; upstream only offers RemoveRule then AddRule, which leaves a window where traffic misses the rule |
-| P3 | Latest burst probe result | `77c93fe2` | `local-only` | `burst.Observer.LatestResults`; upstream exposes only window statistics, so a single on-demand `Check` result is not observable |
-| P4 | Panel HTTP handler | `c9af85f4` | `local-only` | `app/panel` (embedded page and JSON API: status, override, rule switch, route test, on-demand check) and one mount in `app/metrics.httpHandler` |
+| P1 | Router inspection | `0b932a67` | `local-only` | `Router.ListBalancers` (selectors, strategy, fallback, candidates, override, principle) and `Router.ListRuleTargets` (rule to outbound or balancer tag); upstream `ListRule` omits balancer tags and there is no balancer listing |
+| P2 | Atomic rule balancer switch | `0b932a67` | `local-only` | `Router.SetRuleBalancer` swaps the rule slice under the router mutex; upstream only offers RemoveRule then AddRule, which leaves a window where traffic misses the rule |
+| P3 | Latest burst probe result | `e419da9e` | `local-only` | `burst.Observer.LatestResults`; upstream exposes only window statistics, so a single on-demand `Check` result is not observable |
+| P4 | Panel HTTP handler | `7e6be209` | `local-only` | `app/panel` (embedded page and JSON API: status, override, rule switch, route test, on-demand check) and one mount in `app/metrics.httpHandler` |
 
 Interaction with upstream Lua routing (`8855145e`, checked 2026-10-11): when `routing.script` is set, `Router.PickRoute` returns the script's result and never consults the rule list. P1 still lists rules and balancers, and P2 still swaps the rule slice, but neither changes routing decisions in that mode; the panel's route test follows the script because it calls `PickRoute`. The script's `xray.router.PickOutbound` calls `Balancer.PickOutbound`, so panel overrides still apply to balancers picked from Lua. Upstream supplies none of P1–P4, so they stay `local-only`; no code change was made.
 
 Upstream overlap signals to watch: new RoutingService methods for balancer listing or rule updates (P1, P2), an ObservatoryService method for on-demand checks or per-sample results (P3), and changes to `app/metrics.httpHandler` (P4 mount conflict).
 
 ## Verification at current baseline
+
+Rebased on 2026-11-01 onto `main@a4a3dff5` without conflicts; `git range-diff` shows all three commits (`0b932a67`, `e419da9e`, `7e6be209`) patch-identical. P1–P4 retain the residual deltas above. Upstream commits implementing P1–P4: none. Inspected `6ca6d8a6`: the CLI now loops over explicitly supplied balancer tags using the existing `GetBalancerInfo`; it adds neither enumeration/configuration inspection nor atomic rule switching. `d1140de2` only updates protobuf generator headers in these packages. The XHTTP server changes in `316e07a5` and `e7a69fa8` do not alter the metrics listener or panel handler.
+
+Each panel commit passed `go build ./...`. On the topic tip and integration, `go test ./app/panel ./app/metrics ./app/observatory/burst`, `go test ./app/router -skip TestChinaSites`, and affected-package vet passed using Go 1.27.3 on macOS arm64. Integration race tests passed for panel/router tests matching `Panel|ListBalancers|SetRuleBalancer` and burst tests matching `Latest`. The panel package's loopback HTTP end-to-end tests ran; the live outbound probe smoke from 2026-10-09 was not repeated. Test binaries for panel, metrics, router, and burst also compiled/linked for Darwin arm64, Linux arm64/amd64, Windows amd64, and FreeBSD amd64 with `-exec=/usr/bin/true`; foreign binaries were not executed.
+
+## Earlier verification
 
 Rebased on 2026-10-29 onto `main@0afec660` without conflicts; `git range-diff` shows the three commits (now `537bc579`, `88eb59b0`, `2028b710`) patch-identical. The two upstream commits touch only `infra/conf/xray.go`, its test, and `core/core.go`, so P1–P4 stay `local-only`. `55eecaed` creates the inbound manager after the metrics app; `panel.New` looks up `inbound.Manager` only from `MetricsHandler.Start`, after every feature is registered, so the panel is unaffected. Each commit passed `go build ./...`; `go test ./app/panel ./app/metrics ./app/observatory/burst`, `go test ./app/router -skip TestChinaSites`, and the race tests below passed on the integration tree using Go 1.27.3 on macOS arm64. On the `local/panel` tip, one `go test ./app/panel ./app/metrics ./app/observatory/burst` run reported `app/panel` failing; its output was not captured, and 240 later runs of `app/panel`, alone and together with the other two packages, all passed. `startServer` picks the metrics port by listening on `127.0.0.1:0` and closing it before Xray binds it, so another process can take the port in between; this is the suspected cause but was not confirmed. The smoke test was not repeated.
 
