@@ -27,6 +27,9 @@ type RuleTarget struct {
 	RuleTag     string
 	OutboundTag string
 	BalancerTag string
+	// KeptInGlobalMode reports whether the rule still applies in proxy and
+	// direct mode.
+	KeptInGlobalMode bool
 }
 
 func strategyName(s BalancingStrategy) string {
@@ -76,7 +79,7 @@ func (r *Router) ListRuleTargets() []RuleTarget {
 	balancers := *r.balancers.Load()
 	targets := make([]RuleTarget, 0, len(rules))
 	for _, rule := range rules {
-		t := RuleTarget{RuleTag: rule.RuleTag, OutboundTag: rule.Tag}
+		t := RuleTarget{RuleTag: rule.RuleTag, OutboundTag: rule.Tag, KeptInGlobalMode: r.keptInGlobalMode(rule)}
 		if rule.Balancer != nil {
 			for tag, b := range balancers {
 				if b == rule.Balancer {

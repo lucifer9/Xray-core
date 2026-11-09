@@ -38,10 +38,12 @@ func newInspectRouter(t *testing.T) *Router {
 	mockHs := mocks.NewOutboundHandlerSelector(mockCtl)
 	mockHs.EXPECT().Select(gomock.Eq([]string{"a-"})).Return([]string{"a-1"}).AnyTimes()
 	mockHs.EXPECT().Select(gomock.Eq([]string{"b-"})).Return([]string{"b-1", "b-2"}).AnyTimes()
+	mockOhm := mocks.NewOutboundManager(mockCtl)
+	mockOhm.EXPECT().GetHandler(gomock.Any()).Return(nil).AnyTimes()
 
 	r := new(Router)
 	common.Must(r.Init(context.TODO(), config, mocks.NewDNSClient(mockCtl), &mockOutboundManager{
-		Manager:         mocks.NewOutboundManager(mockCtl),
+		Manager:         mockOhm,
 		HandlerSelector: mockHs,
 	}, nil))
 	return r

@@ -106,7 +106,7 @@ func BenchmarkLuaRoute(b *testing.B) {
 				route func() (string, string, error)
 			}{
 				{"rules/native", func() (string, string, error) {
-					rule, _, err := native.pickRouteInternal(ctx)
+					rule, _, err := native.pickRouteInternal(ctx, false)
 					if err != nil {
 						return "", "", err
 					}
