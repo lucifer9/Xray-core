@@ -1,5 +1,5 @@
 // Package panel serves a small web page for inspecting and switching
-// balancers. It is mounted on the metrics HTTP server.
+// balancers and the routing mode. It is mounted on the metrics HTTP server.
 package panel
 
 import (
@@ -22,7 +22,10 @@ import (
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/extension"
 	"github.com/xtls/xray-core/features/inbound"
+	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/features/routing"
+	"github.com/xtls/xray-core/proxy"
+	"github.com/xtls/xray-core/proxy/freedom"
 )
 
 //go:embed index.html
@@ -35,6 +38,8 @@ type Router interface {
 	ListBalancers() ([]router.BalancerState, error)
 	ListRuleTargets() []router.RuleTarget
 	SetRuleBalancer(ruleTag, balancerTag string) error
+	SetRoutingMode(router.RoutingModeState) error
+	GetRoutingMode() router.RoutingModeState
 }
 
 // Checker is implemented by the burst observatory, which can probe on demand.
@@ -47,6 +52,7 @@ type handler struct {
 	router      Router
 	observatory extension.Observatory // nil when no observatory is configured
 	inbounds    inbound.Manager
+	outbounds   outbound.Manager
 }
 
 // New returns the panel handler for the Xray instance in ctx. It fails when
@@ -57,7 +63,11 @@ func New(ctx context.Context) (http.Handler, error) {
 	if !ok {
 		return nil, errors.New("panel requires the built-in router")
 	}
-	h := &handler{router: r, inbounds: v.GetFeature(inbound.ManagerType()).(inbound.Manager)}
+	h := &handler{
+		router:    r,
+		inbounds:  v.GetFeature(inbound.ManagerType()).(inbound.Manager),
+		outbounds: v.GetFeature(outbound.ManagerType()).(outbound.Manager),
+	}
 	if o, ok := v.GetFeature(extension.ObservatoryType()).(extension.Observatory); ok {
 		h.observatory = o
 	}
@@ -75,6 +85,7 @@ func (h *handler) routes() http.Handler {
 	mux.HandleFunc("POST /api/rule", h.handleRule)
 	mux.HandleFunc("POST /api/route", h.handleRoute)
 	mux.HandleFunc("POST /api/check", h.handleCheck)
+	mux.HandleFunc("POST /api/mode", h.handleMode)
 	return guard(mux)
 }
 
@@ -102,9 +113,16 @@ func guard(next http.Handler) http.Handler {
 }
 
 type ruleView struct {
-	RuleTag  string `json:"ruleTag"`
-	Outbound string `json:"outbound,omitempty"`
-	Balancer string `json:"balancer,omitempty"`
+	RuleTag      string `json:"ruleTag"`
+	Outbound     string `json:"outbound,omitempty"`
+	Balancer     string `json:"balancer,omitempty"`
+	KeptInGlobal bool   `json:"keptInGlobal,omitempty"`
+}
+
+// modeView is both the routing mode in the status and the body of api/mode.
+type modeView struct {
+	Mode   router.RoutingMode `json:"mode"`
+	Target string             `json:"target,omitempty"`
 }
 
 type balancerView struct {
@@ -138,6 +156,8 @@ type nodeView struct {
 
 type statusView struct {
 	Time             int64                `json:"time"`
+	Mode             modeView             `json:"mode"`
+	DirectOutbounds  []string             `json:"directOutbounds"`
 	Rules            []ruleView           `json:"rules"`
 	Balancers        []balancerView       `json:"balancers"`
 	Inbounds         []string             `json:"inbounds"`
@@ -152,14 +172,22 @@ func (h *handler) handleStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	mode := h.router.GetRoutingMode()
 	view := statusView{
-		Time:      time.Now().Unix(),
-		Rules:     []ruleView{},
-		Balancers: []balancerView{},
-		Inbounds:  []string{},
+		Time:            time.Now().Unix(),
+		Mode:            modeView{Mode: mode.Mode, Target: mode.Target},
+		DirectOutbounds: h.directOutbounds(r.Context()),
+		Rules:           []ruleView{},
+		Balancers:       []balancerView{},
+		Inbounds:        []string{},
 	}
 	for _, t := range h.router.ListRuleTargets() {
-		view.Rules = append(view.Rules, ruleView{RuleTag: t.RuleTag, Outbound: t.OutboundTag, Balancer: t.BalancerTag})
+		view.Rules = append(view.Rules, ruleView{
+			RuleTag:      t.RuleTag,
+			Outbound:     t.OutboundTag,
+			Balancer:     t.BalancerTag,
+			KeptInGlobal: t.KeptInGlobalMode,
+		})
 	}
 	for _, b := range balancers {
 		view.Balancers = append(view.Balancers, balancerView{
@@ -187,6 +215,28 @@ func (h *handler) handleStatus(w http.ResponseWriter, r *http.Request) {
 		_, view.CanCheck = h.observatory.(Checker)
 	}
 	writeJSON(w, http.StatusOK, view)
+}
+
+// directOutbounds returns the tags of freedom outbounds, sorted, as the
+// candidates for direct mode.
+func (h *handler) directOutbounds(ctx context.Context) []string {
+	tags := []string{}
+	for _, ob := range h.outbounds.ListHandlers(ctx) {
+		if ob.Tag() != "" && isFreedom(ob) {
+			tags = append(tags, ob.Tag())
+		}
+	}
+	slices.Sort(tags)
+	return tags
+}
+
+func isFreedom(ob outbound.Handler) bool {
+	g, ok := ob.(proxy.GetOutbound)
+	if !ok {
+		return false
+	}
+	_, ok = g.GetOutbound().(*freedom.Handler)
+	return ok
 }
 
 func (h *handler) observe(ctx context.Context) (map[string]*nodeView, error) {
@@ -254,6 +304,23 @@ func (h *handler) handleRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	errors.LogInfo(r.Context(), "panel: rule ", req.RuleTag, " now uses balancer ", req.Balancer)
+	writeJSON(w, http.StatusOK, struct{}{})
+}
+
+func (h *handler) handleMode(w http.ResponseWriter, r *http.Request) {
+	var req modeView
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if req.Mode == router.RoutingModeDirect && !slices.Contains(h.directOutbounds(r.Context()), req.Target) {
+		writeError(w, http.StatusBadRequest, errors.New("outbound ", req.Target, " is not a freedom outbound"))
+		return
+	}
+	if err := h.router.SetRoutingMode(router.RoutingModeState{Mode: req.Mode, Target: req.Target}); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	errors.LogInfo(r.Context(), "panel: routing mode set to ", string(req.Mode), " [", req.Target, "]")
 	writeJSON(w, http.StatusOK, struct{}{})
 }
 

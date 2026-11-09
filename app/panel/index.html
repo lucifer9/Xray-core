@@ -55,6 +55,8 @@
   .groups { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
   .groups button { min-width: 64px; }
   .groups button.active { background: var(--accent); border-color: var(--accent); color: #fff; opacity: 1; }
+  .modes { margin: 0 0 12px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+  .card .alert { margin-top: 10px; }
 
   .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); }
   .bal-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
@@ -84,6 +86,7 @@
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
   th { color: var(--muted); font-weight: 500; font-size: 12px; }
   tr:last-child td { border-bottom: 0; }
+  tr.off td { opacity: .45; }
   details summary { cursor: pointer; font-weight: 600; font-size: 15px; }
 
   #toast { position: fixed; right: 16px; bottom: 16px; max-width: 420px; display: none;
@@ -202,6 +205,22 @@ const usedNode = b => b.override || b.principle[0] || '';
 const exitRules = () => state.rules.filter(r => r.balancer);
 const balancerByTag = tag => state.balancers.find(b => b.tag === tag);
 
+const MODES = [
+  {mode: 'proxy', label: '全局代理', title: '除 DNS 规则外，所有流量走一个负载均衡组', none: '没有负载均衡组'},
+  {mode: 'config', label: '按配置分流', title: '按路由规则分流'},
+  {mode: 'direct', label: '全局直连', title: '除 DNS 规则外，所有流量直连', none: '没有 freedom 出站'},
+];
+const modeLabel = mode => MODES.find(m => m.mode === mode).label;
+const isGlobal = () => state.mode.mode !== 'config';
+
+// Target used when entering a mode: the balancer of the last exit rule
+// (usually the final rule) for proxy, the first freedom outbound for direct.
+function defaultTarget(mode) {
+  if (mode === 'proxy') return exitRules().at(-1)?.balancer || state.balancers[0]?.tag || '';
+  if (mode === 'direct') return state.directOutbounds[0] || '';
+  return '';
+}
+
 async function act(label, path, body) {
   if (busy) return;
   busy = true;
@@ -218,6 +237,9 @@ async function act(label, path, body) {
 }
 
 const setRule = (rule, bal) => act(`${rule} 已切换到 ${bal}`, 'api/rule', {ruleTag: rule, balancer: bal});
+const setMode = (mode, target) => act(
+  mode === 'config' ? `已切换到${modeLabel(mode)}` : `已切换到${modeLabel(mode)}：${target}`,
+  'api/mode', mode === 'config' ? {mode} : {mode, target});
 const setOverride = (bal, target) => act(
   target ? `${bal} 已固定到 ${target}` : `${bal} 已恢复自动选择`,
   'api/override', {balancer: bal, target});
@@ -243,57 +265,125 @@ function renderAlerts() {
   box.replaceChildren();
   if (state.fetchError) {
     box.append(el('div', {class: 'alert error'}, el('b', {}, '面板不可达'), state.fetchError));
-  } else if (state.observatoryError) {
+    return;
+  }
+  const {mode, target} = state.mode;
+  if (mode === 'proxy' && !balancerByTag(target)) {
+    box.append(el('div', {class: 'alert error'}, el('b', {}, modeLabel(mode)),
+      `负载均衡组 ${target} 已不存在，新连接会走默认出站。`));
+  } else if (mode !== 'config') {
+    box.append(el('div', {class: 'alert'}, el('b', {}, modeLabel(mode)),
+      `除 DNS 规则外，新连接都走 ${target}；已建立的连接不受影响；重启后恢复按配置分流。`));
+  }
+  if (state.observatoryError) {
     box.append(el('div', {class: 'alert'}, el('b', {}, '观测数据'), state.observatoryError));
   }
 }
 
+function renderModeSwitch() {
+  return el('div', {class: 'groups modes'}, MODES.map(m => {
+    const active = state.mode.mode === m.mode;
+    const target = defaultTarget(m.mode);
+    const unavailable = m.mode !== 'config' && !target;
+    return el('button', {
+      class: active ? 'active' : '', disabled: busy || active || unavailable,
+      title: unavailable ? m.none : m.title,
+      onclick: () => setMode(m.mode, target),
+    }, m.label);
+  }));
+}
+
+// One "head → balancer → node delay" line.
+function exitLine(head, balancerTag) {
+  const b = balancerByTag(balancerTag);
+  const node = b ? usedNode(b) : '';
+  const s = (state.observatory || {})[node];
+  return el('div', {class: 'route'},
+    head,
+    el('span', {class: 'arrow'}, '→'),
+    el('span', {class: 'chip'}, balancerTag),
+    el('span', {class: 'arrow'}, '→'),
+    node ? el('span', {class: 'chip plain'}, node) : el('span', {class: 'muted'}, '无可用节点，走 fallbackTag'),
+    s ? el('span', {class: `delay ${delayLevel(s)}`}, delayText(s)) : null,
+  );
+}
+
+function targetButtons(tags, activeTag, titleOf, onPick) {
+  return el('div', {class: 'groups'}, tags.map(tag => {
+    const active = tag === activeTag;
+    return el('button', {
+      class: active ? 'active' : '', disabled: busy || active, title: titleOf(tag), onclick: () => onPick(tag),
+    }, tag);
+  }));
+}
+
+function renderKeptRules(box) {
+  const kept = state.rules.filter(r => r.keptInGlobal);
+  box.append(kept.length
+    ? el('p', {class: 'small muted'}, '仍生效的规则：',
+      kept.map(r => `${r.ruleTag || '（无 ruleTag）'} → ${r.outbound}`).join('，'))
+    : el('div', {class: 'alert'}, '没有指向 DNS 出站的规则，DNS 劫持的流量也会走模式目标。'));
+}
+
 function renderExits() {
   const box = $('#exits');
-  box.replaceChildren();
+  box.replaceChildren(renderModeSwitch());
+  const {mode, target} = state.mode;
+  if (mode === 'proxy') {
+    box.append(exitLine(el('span', {class: 'chip plain'}, modeLabel(mode)), target),
+      targetButtons(state.balancers.map(g => g.tag), target, t => `全局代理改走 ${t}`, t => setMode(mode, t)));
+    renderKeptRules(box);
+    return;
+  }
+  if (mode === 'direct') {
+    box.append(el('div', {class: 'route'},
+      el('span', {class: 'chip plain'}, modeLabel(mode)),
+      el('span', {class: 'arrow'}, '→'),
+      el('span', {class: 'chip'}, target)));
+    if (state.directOutbounds.length > 1) {
+      box.append(targetButtons(state.directOutbounds, target, t => `全局直连改走 ${t}`, t => setMode(mode, t)));
+    }
+    renderKeptRules(box);
+    return;
+  }
   const rules = exitRules();
   if (!rules.length) {
     box.append(el('span', {class: 'muted'}, '没有指向负载均衡组的路由规则。'));
     return;
   }
-  const obs = state.observatory || {};
   for (const r of rules) {
-    const b = balancerByTag(r.balancer);
-    const node = b ? usedNode(b) : '';
-    const s = obs[node];
-    box.append(el('div', {class: 'route'},
-      el('span', {class: 'chip plain mono'}, r.ruleTag || '（无 ruleTag）'),
-      el('span', {class: 'arrow'}, '→'),
-      el('span', {class: 'chip'}, r.balancer),
-      el('span', {class: 'arrow'}, '→'),
-      node ? el('span', {class: 'chip plain'}, node) : el('span', {class: 'muted'}, '无可用节点，走 fallbackTag'),
-      s ? el('span', {class: `delay ${delayLevel(s)}`}, delayText(s)) : null,
-    ));
+    box.append(exitLine(el('span', {class: 'chip plain mono'}, r.ruleTag || '（无 ruleTag）'), r.balancer));
     if (!r.ruleTag) {
       box.append(el('p', {class: 'small muted'}, '这条规则没有 ruleTag，无法切换。'));
       continue;
     }
-    box.append(el('div', {class: 'groups'}, state.balancers.map(g => {
-      const active = g.tag === r.balancer;
-      return el('button', {
-        class: active ? 'active' : '', disabled: busy || active,
-        title: `将 ${r.ruleTag} 规则切到 ${g.tag}`,
-        onclick: () => setRule(r.ruleTag, g.tag),
-      }, g.tag);
-    })));
+    box.append(targetButtons(state.balancers.map(g => g.tag), r.balancer,
+      t => `将 ${r.ruleTag} 规则切到 ${t}`, t => setRule(r.ruleTag, t)));
   }
+}
+
+// The badge or button for making b the exit, following the routing mode.
+function exitControl(b) {
+  const {mode, target} = state.mode;
+  if (mode === 'proxy') {
+    return b.tag === target ? el('span', {class: 'badge solid'}, `出口：${modeLabel(mode)}`)
+      : el('button', {disabled: busy, onclick: () => setMode(mode, b.tag)}, '设为出口');
+  }
+  if (mode === 'direct') return null;
+  const exits = exitRules();
+  const usedBy = exits.filter(r => r.balancer === b.tag).map(r => r.ruleTag || '（无 ruleTag）');
+  if (usedBy.length) return el('span', {class: 'badge solid'}, `出口：${usedBy.join(', ')}`);
+  return exits.length === 1 && exits[0].ruleTag
+    ? el('button', {disabled: busy, onclick: () => setRule(exits[0].ruleTag, b.tag)}, '设为出口') : null;
 }
 
 function renderBalancer(b) {
   const obs = state.observatory || {};
-  const exits = exitRules();
-  const usedBy = exits.filter(r => r.balancer === b.tag).map(r => r.ruleTag || '（无 ruleTag）');
   const auto = b.principle[0] || '';
   const effective = usedNode(b);
   const tags = [...b.candidates];
   if (b.override && !tags.includes(b.override)) tags.push(b.override);
   const observed = tags.filter(t => obs[t]);
-  const canSwitch = exits.length === 1 && exits[0].ruleTag;
 
   const head = el('div', {class: 'bal-head'},
     el('span', {class: 'name'}, b.tag),
@@ -304,8 +394,7 @@ function renderBalancer(b) {
     state.canCheck && observed.length ? el('button', {
       disabled: observed.every(t => checking.has(t)), onclick: () => check(observed),
     }, observed.some(t => checking.has(t)) ? '测速中…' : '测速') : null,
-    usedBy.length ? el('span', {class: 'badge solid'}, `出口：${usedBy.join(', ')}`)
-      : canSwitch ? el('button', {disabled: busy, onclick: () => setRule(exits[0].ruleTag, b.tag)}, '设为出口') : null,
+    exitControl(b),
   );
 
   const mode = el('div', {class: 'bal-mode'});
@@ -358,13 +447,18 @@ function renderBalancer(b) {
 
 function renderRules() {
   const box = $('#rules');
-  $('#rules-count').textContent = `(${state.rules.length})`;
-  const rows = state.rules.map((r, i) => el('tr', {},
+  const global = isGlobal();
+  const kept = state.rules.filter(r => r.keptInGlobal).length;
+  $('#rules-count').textContent = global ? `(${state.rules.length}，生效 ${kept})` : `(${state.rules.length})`;
+  const rows = state.rules.map((r, i) => el('tr', {class: global && !r.keptInGlobal ? 'off' : null},
     el('td', {class: 'muted'}, i + 1),
     el('td', {class: 'mono'}, r.ruleTag || '—'),
-    el('td', {class: 'mono'}, r.balancer ? `balancer: ${r.balancer}` : r.outbound)));
+    el('td', {class: 'mono'}, r.balancer ? `balancer: ${r.balancer}` : r.outbound),
+    el('td', {}, r.keptInGlobal
+      ? el('span', {class: 'badge accent', title: '指向 DNS 出站，全局代理/直连模式下仍生效'}, '仍生效') : null)));
   box.replaceChildren(el('table', {},
-    el('thead', {}, el('tr', {}, el('th', {}, '#'), el('th', {}, 'ruleTag'), el('th', {}, '出站'))),
+    el('thead', {}, el('tr', {},
+      el('th', {}, '#'), el('th', {}, 'ruleTag'), el('th', {}, '出站'), el('th', {}, '全局模式'))),
     el('tbody', {}, rows)));
 }
 
@@ -411,7 +505,8 @@ $('#test').addEventListener('submit', async ev => {
     out.replaceChildren(el('div', {class: 'route'},
       el('span', {class: 'chip plain mono'}, target),
       el('span', {class: 'arrow'}, '→'),
-      el('span', {class: 'chip plain mono', title: '命中的规则'}, r.ruleTag || '（无 ruleTag）'),
+      el('span', {class: 'chip plain mono', title: '命中的规则'},
+        r.ruleTag || (isGlobal() ? modeLabel(state.mode.mode) : '（无 ruleTag）')),
       el('span', {class: 'arrow'}, '→'),
       el('span', {class: 'chip'}, r.outbound || '（默认出站）')));
   } catch (e) {
