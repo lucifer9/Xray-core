@@ -4,18 +4,18 @@ This file tracks the behavior that remains local relative to the checked upstrea
 
 ## Patch stack
 
-Checked against: `main@a4a3dff5b20c2faae567b742c172c7b95e75c083` (equal to `upstream/main` at sync time).
+Checked against: `main@676eaf66f8f05d4d558ee7a74b4736623d3feeb9` (equal to `upstream/main` at sync time).
 
 The clone now has an `upstream` remote, and `main` mirrors `upstream/main`. The 2026-09-29 and 2026-09-30 synchronizations used the existing `main` without fetching, moving `main`, or pushing.
 
 ```text
-main a4a3dff5
-├── local/tun-carrier-policy  9cf73430
-│   └── local/route-exclusions  bd497d9b
-│       └── local/direct-echo  79c2a62b
-├── local/panel  de97df64  (see balancer-panel.md)
-├── fix/xhttp-h3-dial-leak  78560042  (see upstream-bug-fixes.md)
-└── fix/tun-udp-self-loop  513477c1  (see upstream-bug-fixes.md)
+main 676eaf66
+├── local/tun-carrier-policy  591ac99b
+│   └── local/route-exclusions  33a0565d
+│       └── local/direct-echo  b906312c
+├── local/panel  121c4ecc  (see balancer-panel.md)
+├── fix/xhttp-h3-dial-leak  cf9635ad  (see upstream-bug-fixes.md)
+└── fix/tun-udp-self-loop  189e4d32  (see upstream-bug-fixes.md)
 
 dev = --no-ff merge of local/direct-echo, local/panel, and the fix/* branches, then maintenance documentation
 ```
@@ -35,26 +35,46 @@ Before the 2026-09-29 synchronization, the base was `e5e85ca9` and the integrati
 
 ## Behavior units
 
-All rows below are checked against `main@a4a3dff5`; the 2026-11-01 sync retains every residual behavior and the existing statuses. Verification and platform limitations are recorded below the table. No complete local commit was absorbed or dropped; units 01, 02 and 10 shrank to residual deltas (see the 2026-10-19 integration decisions), unit 01 shrank again on 2026-10-22, and unit 04 shrank on 2026-10-29.
+All rows below are checked against `main@676eaf66`; the 2026-11-09 sync retains every residual behavior and the existing statuses. Verification and platform limitations are recorded below the table. No complete local commit was absorbed or dropped; units 01, 02 and 10 shrank to residual deltas (see the 2026-10-19 integration decisions), unit 01 shrank again on 2026-10-22, and unit 04 shrank on 2026-10-29.
 
 | Issue | Behavior unit | Local branch | Local commit | Upstream status | Upstream commits | Residual delta |
 |---|---|---|---|---|---|---|
-| 01 | Lifecycle-scoped dial controls | `local/tun-carrier-policy` | `9cf73430` | `partial` | `fe2ae23f`, `23e22923` | Closable scoped controller registration (`RegisterScopedDialerController`), one stable snapshot of permanent and scoped controllers per dial, and local DNS dials through that snapshot. Fail-closed controller errors, `BindError` aborts, the controller-before-socket-option order, and UDP controllers receiving the destination rather than the wildcard listen address are upstream behavior |
-| 02 | Process-wide Outbound carrier policy ownership | `local/tun-carrier-policy` | `9cf73430` | `partial` | `fe2ae23f`, `3071fbfa` | Single lifecycle owner, restart-safe cleanup, family isolation, and loopback exemption. Upstream now fails a connection leg when the TUN controller cannot bind it, but keeps one permanent controller and one interface for both IP versions. The carrier binder calls the platform `setinterface` unchanged, so upstream's Windows `BindError` and single-family UDP retry apply to it |
-| 03 | Linux Outbound carrier tracking | `local/tun-carrier-policy` | `9cf73430` | `local-only` | — | Observer-before-snapshot startup, route/link refresh with failure-log de-duplication, and family-specific default-route selection |
-| 04 | macOS Outbound carrier tracking | `local/tun-carrier-policy` | `9cf73430` | `partial` | `6a4274ab` | Routing-socket observation, usable-route selection, and iOS limitation. Family-specific socket binding in `setinterface` is upstream behavior |
-| 05 | Windows default-route carrier tracking | `local/tun-carrier-policy` | `9cf73430` | `partial` | `c7245c03`, `1f304916`, `8989adfd`, `3071fbfa` | Family-specific route selection, combined-metric ordering without Wi-Fi preference, policy ownership, observer-before-snapshot startup, and failure cleanup; scoped-controller integration for upstream WFP DNS resolution; upstream weak host send guard driven by the per-family carriers and the local tracking refresh; reuse upstream route-table APIs and route/interface notifications, and upstream's dual-stack detection in `setinterface` |
-| 06 | Common CIDR Automatic system route planner | `local/route-exclusions` | `bd497d9b` | `local-only` | — | Deterministic normalization, subtraction, capacity checks, fuzz coverage, and large fixture |
-| 07 | Linux Excluded route prefixes | `local/route-exclusions` | `bd497d9b` | `local-only` | — | Common plan installation, incremental ownership, and reverse rollback |
-| 08 | macOS Excluded route prefixes | `local/route-exclusions` | `bd497d9b` | `local-only` | — | Exclusions after protected-default expansion and owned-route rollback |
-| 09 | Windows Excluded route prefixes | `local/route-exclusions` | `bd497d9b` | `local-only` | — | Wintun routes derived from the common route plan |
-| 10 | Optional Echo prober seam | `local/direct-echo` | `79c2a62b` | `partial` | `70ef97d5`, `8703fdb1` | Upstream answers Echo in the stack itself, which is Local Echo. Residual: `StackOptions.EchoProber` diverts requests to a prober, the stack owns its lifetime and waits for in-flight replies on Close, replies carry the remote TTL, and missing carriers produce network unreachable from the TUN gateway |
-| 11 | Bounded Direct Echo engine | `local/direct-echo` | `79c2a62b` | `local-only` | — | Shared sockets, remapping, matching, limits, carrier replacement, single-stack family degradation, cancellation, and shutdown |
-| 12 | Linux Direct Echo transport | `local/direct-echo` | `79c2a62b` | `local-only` | — | Raw ICMPv4/ICMPv6 transport bound to the Linux carrier interface |
-| 13 | macOS Direct Echo transport | `local/direct-echo` | `79c2a62b` | `local-only` | — | Family-specific Darwin raw-socket binding and reply metadata |
-| 14 | Direct Echo activation | `local/direct-echo` | `79c2a62b` | `local-only` | — | Public configuration, supported-platform activation, startup validation with per-family carrier degradation, ICMP network-unreachable reporting, documentation, and explicit unsupported-platform failure |
-| 15 | FreeBSD carrier policy integration | `local/tun-carrier-policy` | `9cf73430` | `partial` | `c1958dba`, `1dd2a0bd` | Retain upstream escape FIB implementation and system DNS takeover; connect it to the lifecycle owner, publish per-family carriers only after successful FIB synchronization, invalidate carriers on synchronization failure, and wait for monitor shutdown using a pollable descriptor |
-| 16 | FreeBSD Excluded route prefixes | `local/route-exclusions` | `bd497d9b` | `local-only` | — | Apply the common planner after upstream protected-default expansion, validate before interface creation, and propagate route rollback failures |
+| 01 | Lifecycle-scoped dial controls | `local/tun-carrier-policy` | `591ac99b` | `partial` | `fe2ae23f`, `23e22923` | Closable scoped controller registration (`RegisterScopedDialerController`), one stable snapshot of permanent and scoped controllers per dial, and local DNS dials through that snapshot. Fail-closed controller errors, `BindError` aborts, the controller-before-socket-option order, and UDP controllers receiving the destination rather than the wildcard listen address are upstream behavior |
+| 02 | Process-wide Outbound carrier policy ownership | `local/tun-carrier-policy` | `591ac99b` | `partial` | `fe2ae23f`, `3071fbfa` | Single lifecycle owner, restart-safe cleanup, family isolation, and loopback exemption. Upstream now fails a connection leg when the TUN controller cannot bind it, but keeps one permanent controller and one interface for both IP versions. The carrier binder calls the platform `setinterface` unchanged, so upstream's Windows `BindError` and single-family UDP retry apply to it |
+| 03 | Linux Outbound carrier tracking | `local/tun-carrier-policy` | `591ac99b` | `local-only` | — | Observer-before-snapshot startup, route/link refresh with failure-log de-duplication, and family-specific default-route selection |
+| 04 | macOS Outbound carrier tracking | `local/tun-carrier-policy` | `591ac99b` | `partial` | `6a4274ab` | Routing-socket observation, usable-route selection, and iOS limitation. Family-specific socket binding in `setinterface` is upstream behavior |
+| 05 | Windows default-route carrier tracking | `local/tun-carrier-policy` | `591ac99b` | `partial` | `c7245c03`, `1f304916`, `8989adfd`, `3071fbfa` | Family-specific route selection, combined-metric ordering without Wi-Fi preference, policy ownership, observer-before-snapshot startup, and failure cleanup; scoped-controller integration for upstream WFP DNS resolution; upstream weak host send guard driven by the per-family carriers and the local tracking refresh; reuse upstream route-table APIs and route/interface notifications, and upstream's dual-stack detection in `setinterface` |
+| 06 | Common CIDR Automatic system route planner | `local/route-exclusions` | `33a0565d` | `local-only` | — | Deterministic normalization, subtraction, capacity checks, fuzz coverage, and large fixture |
+| 07 | Linux Excluded route prefixes | `local/route-exclusions` | `33a0565d` | `local-only` | — | Common plan installation, incremental ownership, and reverse rollback |
+| 08 | macOS Excluded route prefixes | `local/route-exclusions` | `33a0565d` | `local-only` | — | Exclusions after protected-default expansion and owned-route rollback |
+| 09 | Windows Excluded route prefixes | `local/route-exclusions` | `33a0565d` | `local-only` | — | Wintun routes derived from the common route plan |
+| 10 | Optional Echo prober seam | `local/direct-echo` | `b906312c` | `partial` | `70ef97d5`, `8703fdb1` | Upstream answers Echo in the stack itself, which is Local Echo. Residual: `StackOptions.EchoProber` diverts requests to a prober, the stack owns its lifetime and waits for in-flight replies on Close, replies carry the remote TTL, and missing carriers produce network unreachable from the TUN gateway |
+| 11 | Bounded Direct Echo engine | `local/direct-echo` | `b906312c` | `local-only` | — | Shared sockets, remapping, matching, limits, carrier replacement, single-stack family degradation, cancellation, and shutdown |
+| 12 | Linux Direct Echo transport | `local/direct-echo` | `b906312c` | `local-only` | — | Raw ICMPv4/ICMPv6 transport bound to the Linux carrier interface |
+| 13 | macOS Direct Echo transport | `local/direct-echo` | `b906312c` | `local-only` | — | Family-specific Darwin raw-socket binding and reply metadata |
+| 14 | Direct Echo activation | `local/direct-echo` | `b906312c` | `local-only` | — | Public configuration, supported-platform activation, startup validation with per-family carrier degradation, ICMP network-unreachable reporting, documentation, and explicit unsupported-platform failure |
+| 15 | FreeBSD carrier policy integration | `local/tun-carrier-policy` | `591ac99b` | `partial` | `c1958dba`, `1dd2a0bd` | Retain upstream escape FIB implementation and system DNS takeover; connect it to the lifecycle owner, publish per-family carriers only after successful FIB synchronization, invalidate carriers on synchronization failure, and wait for monitor shutdown using a pollable descriptor |
+| 16 | FreeBSD Excluded route prefixes | `local/route-exclusions` | `33a0565d` | `local-only` | — | Apply the common planner after upstream protected-default expansion, validate before interface creation, and propagate route rollback failures |
+
+## 2026-11-09 integration decisions (`main@676eaf66`)
+
+`main` advanced from `a4a3dff5` to `676eaf66` (v26.11.9), adding 24 upstream commits. The old integration tip is `be8a8c81`, its tree is `45dda56614cdda29a7f2514100c7154c13241bc0`, and the old topic tips are `9cf73430`, `bd497d9b`, `79c2a62b`, `de97df64`, `78560042`, and `513477c1`. The clean worktree was frozen with `backup/dev-before-upstream-sync-20261109-202901` and `backup/*-before-sync-20261109-202901`, which remain for acceptance. Topics were rebased using temporary `sync/*-20261109-202901` refs; integration was rebuilt as one no-fast-forward octopus merge followed by the maintenance documentation commits, which folds in the second panel merge `fd8f8015`. No remote refs or deployed processes were changed. The global `url.ssh://git@github.com.insteadof https://github.com` rewrite sends the `https` upstream URL to SSH, which the configured key could not authenticate; fetching used a command-scoped `url.https://github.com/.insteadOf=https://github.com/` override. The SSH signing key needs a passphrase and no agent was available, so with the operator's approval the rewritten commits were created unsigned through command-scoped `commit.gpgsign=false`. Remote URLs and persistent signing settings were not changed.
+
+- `967ade1e` extends `autoSystemWfpBlockLeak` with `all`, `allexceptlan`, bare ports and port ranges, `tcp`/`udp`, `icmp`, and CIDR scopes, and always allows loopback, DHCP, and IPv6 neighbor discovery. In `tun_windows.go` it warns about DNS servers outside the TUN for every filter set, passes the filters to `dnsOutsideTUN`, and enables `resolveOnOwn` under `block.systemDNS() && updater != nil`. This was the sync's only conflict, in the carrier-policy commit: take upstream's structure and keep the local condition `t.options.AutoOutboundsInterface != ""`, because the local stack removes `updater`. Unit 05 keeps its residual delta: the resolver still takes one scoped-controller snapshot per dial, and the weak host send guard still reads the per-family carriers. Unit 09 still builds `covered` from the planned routes, so a DNS server inside an excluded prefix is reported as outside the TUN. Values that cover public addresses (`all`, `allexceptlan`, `tcp`, `udp`, ports) also block other programs' traffic to `autoSystemRoutingTableExclude` prefixes, which leave through the physical interface; Xray's own sockets stay exempt. The existing `tcp/<port>` values already behaved this way, and the filter does not change which routes are installed, so no code changed.
+- `ad98ffd4`, `36756ad6`, and `2d287bbd` log Windows IPv6 setup failures instead of exiting when `DisabledComponents` turns IPv6 off, and then make `misconfigtun` treat IPv6 as unrouted. Unit 05 selects the IPv6 carrier from the IPv6 route table; without a usable IPv6 default route, `selectWindowsDefaultRoute` returns `errNoOutboundCarrier`, which `refresh` treats as family degradation rather than a startup error, so the carrier policy does not reintroduce the exit. The guard families still follow `route6`, as upstream's do. This was reasoned from the code; Windows was not run.
+- `2e4c13d8` closes and removes an inbound whose `Start` fails after the manager is running. A failed TUN `Start` already releases its stack, prober, tracker, interface, and carrier policy (and with it carrier ownership), and leaves the handler fields nil; the following `Close` does nothing, since `CloseIfExists` skips typed nil pointers. No change.
+- `63ca2e0c` (freedom `finalRules` `logLevel` and `delay`, MASQUE default policy), `fff4acac` (cancellable WireGuard endpoint lookup, still through Xray's `dns.Client`), `858c44f4` (UdpHop), `a52db8f6` (`TimeoutWrapperReader` returns `ErrReadTimeout`; the TUN handler uses it as upstream does), `abecd7d9` (geodata `.dat.gz`), XDRIVE (`556767e4`, `043d2e47`, `af8f9673`), mux (`bb335c6b`, `5745dea2`), uTLS and REALITY (`3d3a5041`, `a5d52d2d`, `924a5e78`), dependency, CI, and version commits do not touch units 01–16. A search of the upstream non-test diff for new dial, listen, HTTP transport, resolver, or raw socket calls found only the WireGuard lookup moved into a goroutine.
+- `git range-diff` shows the carrier-policy commit changed only in the resolved hunk; the route-exclusion and Direct Echo commits are patch-identical. No local behavior was newly absorbed, superseded, dropped, or reduced. Before the ledger update, the rebuilt integration tree (`dd96b4e9d5a305cad70a5b8dcc1160a136647cbc`) differed from `git merge-tree --write-tree be8a8c81 upstream/main` only by that resolution replacing the conflict markers in `tun_windows.go`.
+
+## Verification at current baseline
+
+Validated on 2026-11-09 against `main@676eaf66` using Go 1.27.3 on macOS arm64.
+
+- The carrier-policy and route-exclusion tips each passed `go build ./...`, `go test` for `transport/internet`, `features/dns/localdns`, and `proxy/tun/...`, and `infra/conf -run '^TestTunConfig'`; Windows vet passed for `proxy/tun` at the carrier-policy tip, and Darwin, Linux, Windows, and FreeBSD vet at the route-exclusion tip. The Direct Echo tip passed `go build ./...` and `go test ./proxy/tun/...`.
+- The integration passed `go build ./...`, `go test` and `go test -race` for `transport/internet`, `features/dns/localdns`, and `proxy/tun/...`, `go test ./infra/conf` plus race for `^TestTunConfig`, and `go test` for `app/proxyman/...`, `proxy/wireguard`, `proxy/masque`, `core`, `common/buf`, `common/mux`, and `app/dispatcher`. The panel and fix checks are recorded in their ledgers.
+- Darwin arm64, Linux arm64/amd64, Windows amd64, and FreeBSD amd64 application builds passed, and the internet, localdns, TUN, config, panel, metrics, router, burst, freedom, and splithttp test binaries compiled/linked for each with `-exec=/usr/bin/true` (compile/link only on foreign targets), and `app/proxyman/inbound`, which has no tests, compiled. Android arm64 internet, localdns, and TUN test binaries compiled/linked. Darwin vet passed for the affected packages, and Linux, Windows, and FreeBSD vet for internet, localdns, and TUN.
+- `vprotogen -mode check`, `vformat -mode check`, queue range-diffs, and `git diff --check` passed. The built Darwin application passed `run -test` with a combined TUN, automatic-route exclusion, Direct Echo, balancer, and loopback metrics configuration; this validates configuration, not privileged traffic forwarding.
+- No privileged macOS TUN/ICMP end-to-end tests, Linux privileged/runtime tests, Windows/FreeBSD runtime behavior (including the new WFP values and `DisabledComponents` handling), or Android/iOS execution ran. iOS was not compiled in this sync.
 
 ## 2026-11-01 integration decisions (`main@a4a3dff5`)
 
@@ -65,7 +85,7 @@ All rows below are checked against `main@a4a3dff5`; the 2026-11-01 sync retains 
 - `6ea0ab5d` disables MPTCP by default only for inbound TCP listeners; explicit `sockopt.TcpMptcp` still applies. `316e07a5` and `e7a69fa8` add XHTTP server `h2Params` and OPTIONS uplinks, not a new outbound dial path. `0c3402d7` adds streaming gzip decoding to the existing geodata download path; `bc7c8952` changes HTTP response reading; `9b8190f5` rejects empty SNI in the shared TLS/QUIC ClientHello parser. None bypasses scoped carrier controls. `6ca6d8a6` fixes CLI iteration over explicit balancer tags (see the panel ledger); `a4a3dff5` bumps the version.
 - All eight code commits rebased without conflicts or skipped commits. `git range-diff` shows carrier policy, all three panel commits, and both fixes patch-identical; exclusions and Direct Echo differ only in context around upstream's WFP configuration expansion. No local behavior was newly absorbed, superseded, dropped, or reduced. Before the new ledger update, the rebuilt integration tree (`71b97efe0d937c92ec7a42a4c5965ff99cdf14c3`) exactly matched `git merge-tree --write-tree 3931341a upstream/main`, confirming that rebuilding the queue introduced no extra tree changes.
 
-## Verification at current baseline
+## Verification at 2026-11-01 baseline (`main@a4a3dff5`)
 
 Validated on 2026-11-01 against `main@a4a3dff5` using Go 1.27.3 on macOS arm64.
 

@@ -4,7 +4,7 @@ This file tracks the local web panel for inspecting and switching balancers. It 
 
 ## Patch stack
 
-Checked against: `main@a4a3dff5b20c2faae567b742c172c7b95e75c083` (equal to `upstream/main` at sync time).
+Checked against: `main@676eaf66f8f05d4d558ee7a74b4736623d3feeb9` (equal to `upstream/main` at sync time).
 
 `local/panel` is based directly on `main` and does not depend on any TUN behavior; `dev` merges it with `local/direct-echo` and the `fix/*` branches.
 
@@ -22,12 +22,12 @@ The panel is disabled with a warning when the instance does not use the built-in
 
 | Issue | Behavior unit | Local commit | Upstream status | Residual delta |
 |---|---|---|---|---|
-| P1 | Router inspection | `0b932a67` | `local-only` | `Router.ListBalancers` (selectors, strategy, fallback, candidates, override, principle) and `Router.ListRuleTargets` (rule to outbound or balancer tag); upstream `ListRule` omits balancer tags and there is no balancer listing |
-| P2 | Atomic rule balancer switch | `0b932a67` | `local-only` | `Router.SetRuleBalancer` swaps the rule slice under the router mutex; upstream only offers RemoveRule then AddRule, which leaves a window where traffic misses the rule |
-| P3 | Latest burst probe result | `e419da9e` | `local-only` | `burst.Observer.LatestResults`; upstream exposes only window statistics, so a single on-demand `Check` result is not observable |
-| P4 | Panel HTTP handler | `7e6be209` | `local-only` | `app/panel` (embedded page and JSON API: status, override, rule switch, route test, on-demand check) and one mount in `app/metrics.httpHandler` |
-| P5 | Global routing mode | `4cc80495` | `local-only` | `Router.SetRoutingMode`/`GetRoutingMode` (`config`, `proxy` → balancer tag, `direct` → outbound tag), held in memory only. In `proxy` and `direct` mode `PickRoute` applies only rules whose outbound is a `dns` proxy; every other rule is skipped without being applied, so it triggers no DNS lookup and the IpIfNonMatch second pass does not run. Unmatched traffic goes to the mode target with an empty rule tag; the balancer is looked up by tag on each pick. `RuleTarget.KeptInGlobalMode` reports the kept rules |
-| P6 | Panel routing mode switch | `de97df64` | `local-only` | `POST api/mode` (`direct` accepts only freedom outbounds); `api/status` gains `mode`, `directOutbounds`, and per-rule `keptInGlobal`; the page gains a proxy/config/direct switch and dims skipped rules |
+| P1 | Router inspection | `126a6e95` | `local-only` | `Router.ListBalancers` (selectors, strategy, fallback, candidates, override, principle) and `Router.ListRuleTargets` (rule to outbound or balancer tag); upstream `ListRule` omits balancer tags and there is no balancer listing |
+| P2 | Atomic rule balancer switch | `126a6e95` | `local-only` | `Router.SetRuleBalancer` swaps the rule slice under the router mutex; upstream only offers RemoveRule then AddRule, which leaves a window where traffic misses the rule |
+| P3 | Latest burst probe result | `e2ce7078` | `local-only` | `burst.Observer.LatestResults`; upstream exposes only window statistics, so a single on-demand `Check` result is not observable |
+| P4 | Panel HTTP handler | `b41bf615` | `local-only` | `app/panel` (embedded page and JSON API: status, override, rule switch, route test, on-demand check) and one mount in `app/metrics.httpHandler` |
+| P5 | Global routing mode | `5760d624` | `local-only` | `Router.SetRoutingMode`/`GetRoutingMode` (`config`, `proxy` → balancer tag, `direct` → outbound tag), held in memory only. In `proxy` and `direct` mode `PickRoute` applies only rules whose outbound is a `dns` proxy; every other rule is skipped without being applied, so it triggers no DNS lookup and the IpIfNonMatch second pass does not run. Unmatched traffic goes to the mode target with an empty rule tag; the balancer is looked up by tag on each pick. `RuleTarget.KeptInGlobalMode` reports the kept rules |
+| P6 | Panel routing mode switch | `121c4ecc` | `local-only` | `POST api/mode` (`direct` accepts only freedom outbounds); `api/status` gains `mode`, `directOutbounds`, and per-rule `keptInGlobal`; the page gains a proxy/config/direct switch and dims skipped rules |
 
 Interaction with upstream Lua routing (`8855145e`, checked 2026-10-11): when `routing.script` is set, `Router.PickRoute` returns the script's result and never consults the rule list. P1 still lists rules and balancers, and P2 still swaps the rule slice, but neither changes routing decisions in that mode; the panel's route test follows the script because it calls `PickRoute`. The script's `xray.router.PickOutbound` calls `Balancer.PickOutbound`, so panel overrides still apply to balancers picked from Lua. Upstream supplies none of P1–P4, so they stay `local-only`; no code change was made. P5 rejects `SetRoutingMode` for `proxy` and `direct` when a script is set, because the mode would have no effect.
 
@@ -36,6 +36,12 @@ Global mode also skips any rule that forwards API (commander) or reverse traffic
 Upstream overlap signals to watch: new RoutingService methods for balancer listing or rule updates (P1, P2), an ObservatoryService method for on-demand checks or per-sample results (P3), changes to `app/metrics.httpHandler` (P4 mount conflict), and a global, override, or catch-all mode in `Router.PickRoute` or RoutingService (P5).
 
 ## Verification at current baseline
+
+Rebased on 2026-11-09 onto `main@676eaf66` without conflicts; `git range-diff` shows all five commits (`126a6e95`, `e2ce7078`, `b41bf615`, `5760d624`, `121c4ecc`) patch-identical. The rebuilt `dev` merges `local/panel` once, in the single `--no-ff` merge, so the separate `fd8f8015` merge is gone. P1–P6 stay `local-only` with the residual deltas above; upstream commits implementing them: none. The 24 upstream commits do not touch `app/router`, `app/metrics`, `app/observatory`, or `app/panel`. `2e4c13d8` changes only how the inbound manager handles a handler whose `Start` fails; the panel looks up `inbound.Manager` and does not add inbounds. `63ca2e0c` renames the freedom `finalRules` field `blockDelay` to `delay` and adds `logLevel`; P6 only checks that a `direct` target is a freedom outbound, so it is unaffected.
+
+Each panel commit passed `go build ./...`. On the topic tip, `go test ./app/panel ./app/metrics ./app/observatory/burst` and `go test ./app/router -skip TestChinaSites` passed. On the integration, the same tests passed, and race tests passed for panel/router tests matching `Panel|ListBalancers|SetRuleBalancer|RoutingMode|RuleTargets` and burst tests matching `Latest`. Darwin vet passed for `app/panel`, `app/router`, `app/metrics`, and `app/observatory/burst`. Test binaries for panel, metrics, router, and burst compiled/linked for Darwin arm64, Linux arm64/amd64, Windows amd64, and FreeBSD amd64 with `-exec=/usr/bin/true`; foreign binaries were not executed. All of this used Go 1.27.3 on macOS arm64. No panel smoke test against a running instance was repeated.
+
+## Verification at `main@a4a3dff5`
 
 Added P5–P6 on 2026-11-09 on top of `7e6be209` at `main@a4a3dff5`, and merged `local/panel` into `dev` as `fd8f8015`. `dev` now has a second topic merge after the earlier documentation commits; the next rebuild folds it into the single `--no-ff` merge. The P5 commit on its own built and passed `go vet` plus the router, panel, metrics, and burst tests. On the merged `dev` tree, everything in the upstream-sync checklist passed, plus `go vet ./app/router ./app/panel`, `go build ./main`, and `go test ./app/dispatcher`, using Go 1.27.3 on macOS arm64. The panel/router race regex now also matches `RoutingMode|RuleTargets`. `go vet ./app/router/...` still reports the existing warning at `app/router/command/command.go:101`, an untouched file. On 2026-11-08, a temporary unprivileged instance (socks inbound, freedom nodes, `dns-out`, two balancers) was driven through the page and `api/route`:
 - In `direct` and `proxy` mode, port 53 still reached `dns-out` and all other traffic went to the target.
