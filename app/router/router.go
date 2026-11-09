@@ -22,6 +22,7 @@ type Router struct {
 	rules          atomic.Pointer[[]*Rule]
 	script         *scriptEngine
 	balancers      atomic.Pointer[map[string]*Balancer]
+	mode           atomic.Pointer[RoutingModeState] // nil in config mode
 	dns            dns.Client
 
 	ctx        context.Context
@@ -66,7 +67,15 @@ func (r *Router) PickRoute(ctx routing.Context) (routing.Route, error) {
 	}
 
 	originalCtx := ctx
-	rule, ctx, err := r.pickRouteInternal(ctx)
+	mode := r.mode.Load()
+	rule, ctx, err := r.pickRouteInternal(ctx, mode != nil)
+	if err == common.ErrNoClue && mode != nil {
+		tag, err := r.modeOutbound(mode)
+		if err != nil {
+			return nil, err
+		}
+		return &Route{Context: ctx, outboundTag: tag}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +207,9 @@ func (r *Router) ListRule() []routing.Route {
 	return ruleList
 }
 
-func (r *Router) pickRouteInternal(ctx routing.Context) (*Rule, routing.Context, error) {
+// pickRouteInternal returns the first matching rule. In global (proxy or
+// direct) mode it only considers rules kept by the mode.
+func (r *Router) pickRouteInternal(ctx routing.Context, global bool) (*Rule, routing.Context, error) {
 	// SkipDNSResolve is set from DNS module.
 	// the DOH remote server maybe a domain name,
 	// this prevents cycle resolving dead loop
@@ -211,12 +222,18 @@ func (r *Router) pickRouteInternal(ctx routing.Context) (*Rule, routing.Context,
 	rules := *r.rules.Load()
 
 	for _, rule := range rules {
+		// Skip before Apply: ignored IP rules must not trigger DNS lookups.
+		if global && !r.keptInGlobalMode(rule) {
+			continue
+		}
 		if rule.Apply(ctx) {
 			return rule, ctx, nil
 		}
 	}
 
-	if r.domainStrategy != Config_IpIfNonMatch || len(ctx.GetTargetDomain()) == 0 || skipDNSResolve {
+	// The mode target acts as a final catch-all rule, so the IP retry below
+	// would never be reached in global mode.
+	if global || r.domainStrategy != Config_IpIfNonMatch || len(ctx.GetTargetDomain()) == 0 || skipDNSResolve {
 		return nil, ctx, common.ErrNoClue
 	}
 
