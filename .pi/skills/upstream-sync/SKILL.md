@@ -174,7 +174,7 @@ go test ./infra/conf -run '^TestTunConfig'
 go test -race ./transport/internet ./features/dns/localdns ./proxy/tun
 go test ./app/panel ./app/metrics ./app/observatory/burst
 go test ./app/router -skip TestChinaSites
-go test -race ./app/panel ./app/router -run 'Panel|ListBalancers|SetRuleBalancer'
+go test -race ./app/panel ./app/router -run 'Panel|ListBalancers|SetRuleBalancer|RoutingMode|RuleTargets'
 go test -race ./proxy/freedom ./transport/internet/splithttp
 go run ./infra/vprotogen/main.go -mode check -pwd ./
 ```

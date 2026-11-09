@@ -13,7 +13,7 @@ main a4a3dff5
 ├── local/tun-carrier-policy  9cf73430
 │   └── local/route-exclusions  bd497d9b
 │       └── local/direct-echo  79c2a62b
-├── local/panel  7e6be209  (see balancer-panel.md)
+├── local/panel  de97df64  (see balancer-panel.md)
 ├── fix/xhttp-h3-dial-leak  78560042  (see upstream-bug-fixes.md)
 └── fix/tun-udp-self-loop  513477c1  (see upstream-bug-fixes.md)
 
